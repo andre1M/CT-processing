@@ -1,5 +1,4 @@
 from PIL import Image
-import pandas as pd
 import numpy as np
 import pydicom
 import meshio
@@ -33,6 +32,10 @@ class ImageProcessingEngine:
         else:
             raise ValueError('Stacks can\'t be processed due to different layer thickness')
 
+        if self.stack.resolution['x'] != self.ref_stack.resolution['x'] or \
+                self.stack.resolution['y'] != self.ref_stack.resolution['y']:
+            raise ValueError('Stacks can\'t be processed due to different resolution')
+
     def subtract(self):
         return self.ref_stack.pixel_data - self.stack.pixel_data
 
@@ -65,6 +68,11 @@ class ImageProcessingEngine:
             im = Image.fromarray(data)
             im = im.convert('L')
             im.save(self.output_dir + name)
+
+    def save_as_image(self, instance_slice, pixel_data, name):
+        """Saves data array as image without scaling"""
+        instance_slice.PixelData = np.array(pixel_data, dtype=instance_slice.pixel_array.dtype).tobytes()
+        pydicom.filewriter.dcmwrite(self.output_dir + name, instance_slice)
 
     def get_mask(self, stack_pixel_data, threshold, ksize, app_range):
         """Locates core in an image and creates mask"""
@@ -245,7 +253,8 @@ class ImageProcessingEngine:
         mesh.points[0, :] = np.around(mesh.points[0, :])
         # Convert y-axes (zero point is at the top left corner)
         mesh.points[mesh.points < 0] *= -1
-        meshio.write_points_cells(self.output_dir + 'corrected_' + mesh_file, mesh.points, {'wedge': mesh.cells['wedge']})
+        meshio.write_points_cells(self.output_dir + 'corrected_' + mesh_file, mesh.points,
+                                  {'wedge': mesh.cells['wedge']})
         return 'corrected_' + mesh_file
 
     def get_fiji_mesh(self, mesh_name, name):
@@ -304,22 +313,6 @@ class ImageProcessingEngine:
     def run_fiji(self, macro):
         os.system('ImageJ-macosx -macro %s' % (self.output_dir + macro))
 
-    # @staticmethod
-    # def filter_results(measurements_file, output_dir, stack_size, elements):
-    #     """Extracts mean grey level values per mesh element from Fiji output;
-    #     available only when resulting .csv file is supplied"""
-    #     measurements_raw_data = pd.read_csv(output_dir + measurements_file)
-    #     measurements_filtered = np.zeros((stack_size, 1, elements.shape[0]))
-    #     for i in range(stack_size):
-    #         measurements_filtered[i, 0, :] = \
-    #             measurements_raw_data.iloc[i * elements.shape[0]:(i + 1) * elements.shape[0]]['Mean']
-    #     mean_per_element = measurements_filtered[:]
-    #     if measurements_raw_data.shape[0] == stack_size * elements.shape[0]:
-    #         print('\nProcessing complete successfully. No data is lost')
-    #         return mean_per_element
-    #     else:
-    #         raise ValueError('\nProcessing complete with errors. Some data is lost')
-
 
 class Stack:
     def __init__(self, path):
@@ -327,7 +320,7 @@ class Stack:
         self.names = self.read_file_names()
         self.size = len(self.names)
         self.resolution = self.get_resolution()
-        self.pixel_data = self.collect_slices()
+        self.pixel_data = self.collect_pixel_data()
 
     def read_file_names(self):
         """Scans folder with CT and gets slice names (.IMA format)"""
@@ -349,95 +342,9 @@ class Stack:
         slice_data = pydicom.dcmread(self.path + self.names[index])
         return slice_data
 
-    def collect_slices(self):
+    def collect_pixel_data(self):
         """Collects all slices into a single array"""
         matrix = np.zeros((self.size, self.resolution['y'], self.resolution['x']))
         for i in range(self.size):
             matrix[i] = self.read_slice(i).pixel_array
-        return np.array(matrix)
-
-
-
-
-
-    # @staticmethod
-    # def generate_macro(nodes, elements, measurements_file, stack_size, filtered_dir, output_dir, with_processing=True):
-    #     """Generate Fiji macro commands to discretize and process stack"""
-    #     string = 'run("Image Sequence...", "open=%s sort");\n' % filtered_dir
-    #     string += 'run("Gaussian Blur...", "sigma=2 stack");\n'
-    #     for i in range(len(elements)):
-    #         x1 = nodes[int(elements[i, 0]), 0]
-    #         y1 = nodes[int(elements[i, 0]), 1]
-    #         x2 = nodes[int(elements[i, 1]), 0]
-    #         y2 = nodes[int(elements[i, 1]), 1]
-    #         x3 = nodes[int(elements[i, 2]), 0]
-    #         y3 = nodes[int(elements[i, 2]), 1]
-    #         string += 'makePolygon(%d,%d,%d,%d,%d,%d);\nroiManager("Add");\n' % (x1, y1, x2, y2, x3, y3)
-    #     if with_processing:
-    #         for i in range(stack_size):
-    #             string += 'roiManager("Measure");\nrun("Next Slice [>]");\n'
-    #         string += 'saveAs("Measurements", "%s")\n' % (output_dir + measurements_file)
-    #         string += 'run("Quit");'
-    #     return string
-    #
-    # @staticmethod
-    # def write_macro(macro, macro_file, output_dir):
-    #     """Writes Fiji macros"""
-    #     file = open(output_dir + macro_file, "w+")
-    #     file.write(macro)
-    #     file.close()
-    #
-    # @staticmethod
-    # def run_macro(macro_file, output_dir, headless=True):
-    #     """Runs Fiji macros"""
-    #     if headless:
-    #         os.system('ImageJ-macosx --headless -macro %s' % (output_dir + macro_file))
-    #     else:
-    #         os.system('ImageJ-macosx -macro %s' % (output_dir + macro_file))
-    #
-    # @staticmethod
-    # def get_porosity(mean_grey_value):
-    #     """Generates porosity values for 3D as simple average between two adjacent slices"""
-    #     poro_per_roi = mean_grey_value / 1000
-    #     poro_per_roi[poro_per_roi < 0] = 0
-    #     poro_3d = np.zeros((mean_grey_value.shape[0] - 1) * mean_grey_value.shape[2])
-    #     for i in range(mean_grey_value.shape[0] - 1):
-    #         for j in range(mean_grey_value.shape[2]):
-    #             poro_3d[i * mean_grey_value.shape[2] + j] = (poro_per_roi[i, 0, j] + poro_per_roi[i + 1, 0, j]) / 2
-    #     return poro_3d
-    #
-    # @staticmethod
-    # def filter_results(measurements_file, output_dir, stack_size, elements):
-    #     """Extracts mean grey level values per mesh element from Fiji output;
-    #     available only when resulting .csv file is supplied"""
-    #     measurements_raw_data = pd.read_csv(output_dir + measurements_file)
-    #     measurements_filtered = np.zeros((stack_size, 1, elements.shape[0]))
-    #     for i in range(stack_size):
-    #         measurements_filtered[i, 0, :] = \
-    #             measurements_raw_data.iloc[i * elements.shape[0]:(i + 1) * elements.shape[0]]['Mean']
-    #     mean_per_element = measurements_filtered[:]
-    #     if measurements_raw_data.shape[0] == stack_size * elements.shape[0]:
-    #         print('\nProcessing complete successfully. No data is lost')
-    #         return mean_per_element
-    #     else:
-    #         raise ValueError('\nProcessing complete with errors. Some data is lost')
-    #
-    # @staticmethod
-    # def write_poro2mesh(poro_3d, nodes, elements, output_dir, mesh_name):
-    #     """Writes porosity to a mesh file"""
-    #     mesh_3d = meshio.read(output_dir + mesh_name)
-    #     poro_3d_ordered = np.array([])
-    #     coordinates = np.zeros((mesh_3d.cells['wedge'].shape[1], mesh_3d.points.shape[1]))
-    #     horizontal_step = elements.shape[0]
-    #     vertical_step = int(poro_3d.shape[0] / horizontal_step)
-    #     for i in range(0, mesh_3d.cells['wedge'].shape[0], vertical_step):
-    #         for j in range(mesh_3d.cells['wedge'].shape[1]):
-    #             coordinates[j, :] = mesh_3d.points[mesh_3d.cells['wedge'][i, j]]
-    #         for k in range(horizontal_step):
-    #             if (coordinates[:3, :] == nodes[elements[k].astype(int)][:, :]).all():
-    #                 poro_3d_ordered = np.append(poro_3d_ordered, poro_3d[k::horizontal_step])
-    #                 break
-    #     np.savetxt(output_dir + 'poro.csv', poro_3d_ordered, delimiter=",")
-    #     mesh_3d.cell_data['wedge']['gmsh:physical'] = poro_3d_ordered
-    #     mesh_3d.cell_data['wedge']['gmsh:geometrical'] = poro_3d_ordered
-    #     meshio.write(output_dir + 'mesh_final.vtk', mesh_3d)
+        return matrix

@@ -10,7 +10,21 @@ ipen = ImageProcessingEngine('output', 'filtered', 'brine', 'dry')
 # Subtract stack pixel data from reference stack pixel data
 subtracted_pixel_data = ipen.subtract()
 
+# # # # Image generation # # #
+# params = [3, 7, 13, 23, 37, 51, 87, 123]
+# instance_slice = ipen.stack.read_slice(70)
+# for i in params:
+#     blurred = ipen.blur(subtracted_pixel_data[70], i)
+#     name = 'blurred_ksize_%d.ima' % i
+#     ipen.save_as_image(instance_slice, blurred, name)
+
 # Construct and save mask
+# for i in params:
+#     mask = ipen.get_mask(subtracted_pixel_data, 120, i, 0.15)
+#     name = 'blur_ksize_%d.bmp' % i
+#     ipen.save_binary_as_image(mask, name)
+# # # # Image generation # # #
+
 mask = ipen.get_mask(subtracted_pixel_data, 120, 23, 0.15)
 ipen.save_binary_as_image(mask, 'mask.bmp')
 
