@@ -10,49 +10,31 @@ ipen = ImageProcessingEngine('output', 'filtered', 'brine', 'dry')
 # Subtract stack pixel data from reference stack pixel data
 subtracted_pixel_data = ipen.subtract()
 
-# # # # Image generation # # #
-# params = [3, 7, 13, 23, 37, 51, 87, 123]
-# instance_slice = ipen.stack.read_slice(70)
-# for i in params:
-#     blurred = ipen.blur(subtracted_pixel_data[70], i)
-#     name = 'blurred_ksize_%d.ima' % i
-#     ipen.save_as_image(instance_slice, blurred, name)
-
-# Construct and save mask
-# for i in params:
-#     mask = ipen.get_mask(subtracted_pixel_data, 120, i, 0.15)
-#     name = 'blur_ksize_%d.bmp' % i
-#     ipen.save_binary_as_image(mask, name)
-# # # # Image generation # # #
-
-mask = ipen.get_mask(subtracted_pixel_data, 120, 23, 0.15)
+# Create and save mask
+mask = ipen.get_mask(subtracted_pixel_data, 65, 59, 0.15)
 ipen.save_binary_as_image(mask, 'mask.bmp')
 
-# Filter and save mask
-mask_filtered = ipen.filter_mask(mask, 3, 1)
-ipen.save_binary_as_image(mask_filtered, 'mask_filtered.bmp')
-
 # Delete all information beyond core region
-masked_pixel_data = ipen.apply_mask(subtracted_pixel_data, mask_filtered, correction=1024)
+masked_pixel_data = ipen.apply_mask(subtracted_pixel_data, mask, correction=1024)
 
 # Filter resulting stack
 transition_pixel_data = ipen.kalman_stack_filter(masked_pixel_data, 0.75, 0.05, reverse=False)
 filtered_pixel_data = ipen.kalman_stack_filter(transition_pixel_data, 0.75, 0.05, reverse=True)
 
 # Save filtered stack
-ipen.save_stack(filtered_pixel_data, 'filtered', 'tiff')
+ipen.save_stack(filtered_pixel_data, 'filtered', 'IMA')
 
 # Find mask contour
-contour = ipen.get_mask_contour(mask_filtered)
+contour = ipen.get_mask_contour(mask)
 
 # Save contour as image
-ipen.draw_contour(contour, mask_filtered.shape, 'contour.bmp')
+ipen.draw_contour(contour, mask.shape, 'contour.bmp')
 
 # Get mesh contour
-mesh_contour = ipen.get_mesh_contour(contour, 8)
+mesh_contour = ipen.get_mesh_contour(contour, 18)
 
 # Save mesh contour as image
-ipen.draw_contour(mesh_contour, mask_filtered.shape, 'mesh_contour.bmp')
+ipen.draw_contour(mesh_contour, mask.shape, 'mesh_contour.bmp')
 
 # Write Gmsh geometry file
 ipen.write_gmsh_geometry(mesh_contour, 'core.geo')
@@ -67,18 +49,15 @@ corrected_mesh = ipen.correct_mesh('mesh.msh')
 ipen.get_fiji_mesh(corrected_mesh, 'fiji.msh')
 
 # Write Fiji marcos
-ipen.generate_macro('fiji.msh', 'measurements.csv', 'macro.ijm', with_processing=True)
+ipen.generate_macro('fiji.msh', 'measurements.csv', 'macro.ijm', with_processing=False)
 
 # Run Fiji macros
 ipen.run_fiji('macro.ijm')
 
+# mesh_data = ipen.collect_mesh_data('measurements.csv')
+# mesh_with_data = ipen.wrap_mesh_with_data(mesh_data, 'mesh.msh')
+# ipen.write_mesh_with_data(mesh_with_data, 'vtk')
 
-# # ====================== 8. Utilize Fiji ======================
-# macro = engine.generate_macro(nodes, elements, measurements_file, stack.size,
-#                               path.filtered_stack, path.output, True)
-# engine.write_macro(macro, macro_file, path.output)
-# engine.run_macro(macro_file, path.output, False)
-#
 # # ====================== 9. Generate porosity map ======================
 # mean_per_element = engine.filter_results(measurements_file, path.output, stack.size, elements)
 # poro_3d = engine.get_porosity(mean_per_element)
