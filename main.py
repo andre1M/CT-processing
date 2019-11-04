@@ -31,7 +31,7 @@ contour = ipen.get_mask_contour(mask)
 ipen.draw_contour(contour, mask.shape, 'contour.bmp')
 
 # Get mesh contour
-mesh_contour = ipen.get_mesh_contour(contour, 18)
+mesh_contour = ipen.get_mesh_contour(contour, 19)
 
 # Save mesh contour as image
 ipen.draw_contour(mesh_contour, mask.shape, 'mesh_contour.bmp')
@@ -49,19 +49,13 @@ corrected_mesh = ipen.correct_mesh('mesh.msh')
 ipen.get_fiji_mesh(corrected_mesh, 'fiji.msh')
 
 # Write Fiji marcos
-ipen.generate_macro('fiji.msh', 'measurements.csv', 'macro.ijm', with_processing=False)
+ipen.generate_macro('fiji.msh', 'measurements.csv', 'macro.ijm', with_processing=True)
 
 # Run Fiji macros
 ipen.run_fiji('macro.ijm')
 
-# mesh_data = ipen.collect_mesh_data('measurements.csv')
-# mesh_with_data = ipen.wrap_mesh_with_data(mesh_data, 'mesh.msh')
-# ipen.write_mesh_with_data(mesh_with_data, 'vtk')
-
-# # ====================== 9. Generate porosity map ======================
-# mean_per_element = engine.filter_results(measurements_file, path.output, stack.size, elements)
-# poro_3d = engine.get_porosity(mean_per_element)
-# engine.write_poro2mesh(poro_3d, nodes, elements, path.output, corrected_mesh_name)
+measurements = ipen.get_measurements('measurements.csv', 'fiji.msh')
+ipen.wrap_mesh(measurements, 'corrected_mesh.msh', 'fiji.msh')
 
 # Stop timer and print time
 elapsed_time = round(time.time() - start_time, 2)

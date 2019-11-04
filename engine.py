@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+import pandas as pd
 from PIL import Image
 import numpy as np
 import pydicom
@@ -261,7 +261,48 @@ class ImageProcessingEngine:
         file.close()
 
     def run_fiji(self, macro):
-        os.system('ImageJ-macosx -macro %s' % (self.output_dir + macro))
+        os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.output_dir + macro))
+
+    def get_measurements(self, measurements_file, mesh):
+        """Extract mean grey level and area values per mesh element from Fiji output;
+        available only when resulting .csv file is supplied"""
+        elements = meshio.read(self.output_dir + mesh).cells['triangle']
+        measurements_raw_data = pd.read_csv(self.output_dir + measurements_file)
+        poro_per_element = measurements_raw_data['Mean'].values / 1000
+        area_per_element = measurements_raw_data['Area'].values
+
+        if len(poro_per_element) == self.stack.size * elements.shape[0] and \
+                len(area_per_element) == self.stack.size * elements.shape[0]:
+            print('\nProcessing complete successfully. No data is lost')
+        else:
+            raise ValueError('\nProcessing complete with errors. Some data is lost')
+        return {'poro': poro_per_element,
+                'area': area_per_element}
+
+    def wrap_mesh(self, measurements, mesh, mesh_2d):
+        mesh_3d = meshio.read(self.output_dir + mesh)
+        mesh_2d = meshio.read(self.output_dir + mesh_2d)
+        elements = mesh_2d.cells['triangle']
+        poro_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+        vol_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+        poro_3d = np.zeros(len(elements) * (self.stack.size - 1))
+
+        for i in range(len(poro_3d)):
+            poro_3d[i] = (measurements['poro'][i] + measurements['poro'][len(elements) + i]) / 2
+
+        for i in range(len(elements)):
+            poro_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = poro_3d[i::len(elements)]
+            vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
+                measurements['area'][i] * self.layer_thickness * 1e-9
+
+        # cut_num = round(len(mesh_3d.cells['wedge']) * 0.25)
+        # non_cut = round(len(mesh_3d.cells['wedge']) * 0.75)
+        # plot_actnums = np.append(np.ones(non_cut), np.zeros(cut_num))
+        # mesh_3d.cell_data['wedge']['gmsh:plot'] = plot_actnums
+
+        mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
+        mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
+        meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
 
 
 class Stack:
