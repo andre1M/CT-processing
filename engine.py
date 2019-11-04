@@ -1,3 +1,4 @@
+import pandas as pd
 from PIL import Image
 import numpy as np
 import pydicom
@@ -8,7 +9,7 @@ import re
 
 
 class ImageProcessingEngine:
-    def __init__(self, output_dir, resulting_stack_dir, ref_stack_dir, stack_dir):
+    def __init__(self, output_dir: str, resulting_stack_dir: str, ref_stack_dir: str, stack_dir: str):
         # Required paths
         self.output_dir = os.path.dirname(os.path.abspath(__file__)) + '/' + output_dir + '/'
         self.resulting_stack_dir = os.path.dirname(os.path.abspath(__file__)) + '/' + resulting_stack_dir + '/'
@@ -90,58 +91,11 @@ class ImageProcessingEngine:
             raise ValueError('app_range determines which fraction of slices will be excluded from the evaluation;'
                              'Must be either a single value or two values (for both sides of a core)')
 
-        mask = np.ones((binary.shape[1], binary.shape[2]))
+        mask = np.zeros((binary.shape[1], binary.shape[2]))
         for i in range(approximation_range[0], approximation_range[1]):
-            mask = mask * binary[i]
-        for i in range(approximation_range[0], approximation_range[1]):
-            mask = cv2.bitwise_and(mask, binary[i])
-        mask[mask == -0] = 0
+            mask = mask + binary[i]
+        mask = self.get_binary(mask, 65, 37)
         return mask
-
-    def filter_mask(self, mask, threshold, enlarge=0):
-        """Filters mask: correct shape, eliminate black spots withing a core region"""
-        borders = self.locate_borders(mask, threshold)
-        center, radius = self.evaluate_geometry(borders)
-        cv2.circle(mask, (center[1], center[0]), radius + enlarge, 1, thickness=-1)
-        mask[mask == -0] = 0
-        return mask
-
-    @staticmethod
-    def locate_borders(mask, threshold):
-        """Locates borders of a circular core from its mask"""
-        top, right, bottom, left = 0, 0, 0, 0
-        i = 0
-        while top == 0:
-            if np.count_nonzero(mask[i, :] > 0) > threshold:
-                top = i
-            i += 1
-
-        i = mask.shape[1] - 1
-        while right == 0:
-            if np.count_nonzero(mask[:, i] > 0) > threshold:
-                right = i
-            i -= 1
-
-        i = mask.shape[0] - 1
-        while bottom == 0:
-            if np.count_nonzero(mask[i, :] > 0) > threshold:
-                bottom = i
-            i -= 1
-
-        i = 0
-        while left == 0:
-            if np.count_nonzero(mask[:, i] > 0) > threshold:
-                left = i
-            i += 1
-        return {'top': top, 'right': right, 'bottom': bottom, 'left': left}
-
-    @staticmethod
-    def evaluate_geometry(borders):
-        """Evaluates geometry of a core"""
-        radius = int(round((borders['bottom'] - borders['top'] + borders['right'] - borders['left']) / 4))
-        center = [int(round((borders['top'] + borders['bottom']) / 2)),
-                  int(round((borders['left'] + borders['right']) / 2))]
-        return center, radius
 
     @staticmethod
     def apply_mask(stack_pixel_data, mask, correction=0):
@@ -158,25 +112,23 @@ class ImageProcessingEngine:
         if reverse:
             stack_pixel_data = np.flip(stack_pixel_data, axis=0)
 
-        # Set up priors
-        tmp = np.ones((stack_pixel_data.shape[1], stack_pixel_data.shape[2]))
-        predicted = stack_pixel_data[0, :, :]
-        predicted_var = tmp * percent_var
-        noise_var = predicted_var
-
         # Copy last slice to the end of the stack
         stack_pixel_data = np.concatenate((stack_pixel_data, stack_pixel_data[-1:, :, :]))
+
+        # Set up priors
+        noise_var = percent_var
+        predicted = stack_pixel_data[0, :, :]
+        predicted_var = noise_var
 
         for i in range(0, stack_pixel_data.shape[0] - 1):
             observed = stack_pixel_data[i + 1, :, :]
             kalman = np.divide(predicted_var, np.add(predicted_var, noise_var))
-            corrected = gain * predicted + (1.0 - gain) * observed + np.multiply(kalman,
-                                                                                 np.subtract(observed, predicted))
-            corrected_var = np.multiply(predicted_var, np.subtract(tmp, kalman))
+            corrected = gain * predicted + (1 - gain) * observed + np.multiply(kalman, np.subtract(observed, predicted))
+            corrected_var = np.multiply(predicted_var, (1 - kalman))
 
             predicted_var = corrected_var
             predicted = corrected
-            stack_pixel_data[i, :, :] = corrected
+            stack_pixel_data[i + 1, :, :] = corrected
 
         stack_pixel_data = stack_pixel_data[:-1, :, :]
         if reverse:
@@ -215,7 +167,7 @@ class ImageProcessingEngine:
         string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
         for k in range(len(contour)):
             i, j = contour[k]
-            string += 'Point(%d) = {%d, %d, 0, lc};\n' % (k + 1, j, -i)
+            string += 'Point(%d) = {%d, %d, 0, lc};\n' % (k + 1, j, i)
         for k in range(len(contour)):
             if k == len(contour) - 1:
                 string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
@@ -250,9 +202,7 @@ class ImageProcessingEngine:
         mesh = meshio.read(self.output_dir + mesh_file)
         # Get node coordinates and adapt them to the Fiji coordinate system
         mesh.points[:, 0] = np.around(mesh.points[:, 0])
-        mesh.points[0, :] = np.around(mesh.points[0, :])
-        # Convert y-axes (zero point is at the top left corner)
-        mesh.points[mesh.points < 0] *= -1
+        mesh.points[:, 1] = np.around(mesh.points[:, 1])
         meshio.write_points_cells(self.output_dir + 'corrected_' + mesh_file, mesh.points,
                                   {'wedge': mesh.cells['wedge']})
         return 'corrected_' + mesh_file
@@ -311,12 +261,54 @@ class ImageProcessingEngine:
         file.close()
 
     def run_fiji(self, macro):
-        os.system('ImageJ-macosx -macro %s' % (self.output_dir + macro))
+        os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.output_dir + macro))
+
+    def get_measurements(self, measurements_file, mesh):
+        """Extract mean grey level and area values per mesh element from Fiji output;
+        available only when resulting .csv file is supplied"""
+        elements = meshio.read(self.output_dir + mesh).cells['triangle']
+        measurements_raw_data = pd.read_csv(self.output_dir + measurements_file)
+        poro_per_element = measurements_raw_data['Mean'].values / 1000
+        area_per_element = measurements_raw_data['Area'].values
+
+        if len(poro_per_element) == self.stack.size * elements.shape[0] and \
+                len(area_per_element) == self.stack.size * elements.shape[0]:
+            print('\nProcessing complete successfully. No data is lost')
+        else:
+            raise ValueError('\nProcessing complete with errors. Some data is lost')
+        return {'poro': poro_per_element,
+                'area': area_per_element}
+
+    def wrap_mesh(self, measurements, mesh, mesh_2d):
+        mesh_3d = meshio.read(self.output_dir + mesh)
+        mesh_2d = meshio.read(self.output_dir + mesh_2d)
+        elements = mesh_2d.cells['triangle']
+        poro_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+        vol_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+        poro_3d = np.zeros(len(elements) * (self.stack.size - 1))
+
+        for i in range(len(poro_3d)):
+            poro_3d[i] = (measurements['poro'][i] + measurements['poro'][len(elements) + i]) / 2
+
+        for i in range(len(elements)):
+            poro_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = poro_3d[i::len(elements)]
+            vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
+                measurements['area'][i] * self.layer_thickness * 1e-9
+
+        # cut_num = round(len(mesh_3d.cells['wedge']) * 0.25)
+        # non_cut = round(len(mesh_3d.cells['wedge']) * 0.75)
+        # plot_actnums = np.append(np.ones(non_cut), np.zeros(cut_num))
+        # mesh_3d.cell_data['wedge']['gmsh:plot'] = plot_actnums
+
+        mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
+        mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
+        meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
 
 
 class Stack:
-    def __init__(self, path):
+    def __init__(self, path, extension='.*IMA'):
         self.path = path
+        self.extension = extension
         self.names = self.read_file_names()
         self.size = len(self.names)
         self.resolution = self.get_resolution()
@@ -326,7 +318,7 @@ class Stack:
         """Scans folder with CT and gets slice names (.IMA format)"""
         files = os.listdir(self.path)
         files.sort()
-        extension = re.compile('.*IMA')
+        extension = re.compile(self.extension)
         images = list(filter(extension.match, files))
         return images
 
