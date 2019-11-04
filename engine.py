@@ -295,11 +295,6 @@ class ImageProcessingEngine:
             vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
                 measurements['area'][i] * self.layer_thickness * 1e-9
 
-        # cut_num = round(len(mesh_3d.cells['wedge']) * 0.25)
-        # non_cut = round(len(mesh_3d.cells['wedge']) * 0.75)
-        # plot_actnums = np.append(np.ones(non_cut), np.zeros(cut_num))
-        # mesh_3d.cell_data['wedge']['gmsh:plot'] = plot_actnums
-
         mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
         mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
         meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
