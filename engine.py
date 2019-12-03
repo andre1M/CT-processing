@@ -1,41 +1,45 @@
-import pandas as pd
+from path_container import PathContainer
+from stack import Stack
+
+from math import sqrt
 from PIL import Image
+import pandas as pd
 import numpy as np
 import pydicom
 import meshio
 import cv2
 import os
-import re
 
 
 class ImageProcessingEngine:
-    def __init__(self, output_dir: str, resulting_stack_dir: str, ref_stack_dir: str, stack_dir: str):
+    def __init__(self):
         # Required paths
-        self.output_dir = os.path.dirname(os.path.abspath(__file__)) + '/' + output_dir + '/'
-        self.resulting_stack_dir = os.path.dirname(os.path.abspath(__file__)) + '/' + resulting_stack_dir + '/'
+        self.paths = None
+        self.stack = None
+        self.ref_stack = None
 
+    def set(self, stack_dir: str, ref_stack_dir: str, resulting_stack_dir: str, output_dir: str):
+        """Set paths to all required directories"""
+        self.paths = PathContainer(stack_dir, ref_stack_dir, resulting_stack_dir, output_dir)
+
+    def read(self):
+        """Read stacks and check their compatibility"""
         # Initialize stack and reference stack objects
-        self.stack = Stack(os.path.dirname(os.path.abspath(__file__)) + '/' + stack_dir + '/')
-        self.ref_stack = Stack(os.path.dirname(os.path.abspath(__file__)) + '/' + ref_stack_dir + '/')
+        self.stack = Stack(self.paths.stack)
+        self.ref_stack = Stack(self.paths.ref_stack)
 
-        # Check stack sizes
-        if self.stack.size != self.ref_stack.size:
-            raise ValueError('Stacks can\'t be processed; stack sizes don\'t match')
-
-        # Get essential information about images (should be the same for both stacks)
-        if self.stack.read_slice(0).PixelSpacing[0] == self.ref_stack.read_slice(0).PixelSpacing[0]:
-            self.pixel_spacing = self.stack.read_slice(0).PixelSpacing[0]
+        # Check stack's metrics
+        if self.stack.info['Stack size'] != self.ref_stack.info['Stack size']:
+            raise RuntimeError('Stacks can\'t be processed; stack sizes don\'t match')
+        elif self.stack.info['Resolution'] != self.ref_stack.info['Resolution']:
+            raise RuntimeError('Stacks can\'t be processed; stack resolutions don\'t match')
+        elif self.stack.info['Pixel spacing'] != self.ref_stack.info['Pixel spacing']:
+            raise RuntimeError('Stacks can\'t be processed; stack pixel spacings don\'t match')
         else:
-            raise ValueError('Stacks can\'t be processed due to different pixel spacing')
+            self.stack.load()
+            self.ref_stack.load()
 
-        if self.stack.read_slice(0).SliceThickness == self.ref_stack.read_slice(0).SliceThickness:
-            self.layer_thickness = self.stack.read_slice(0).SliceThickness
-        else:
-            raise ValueError('Stacks can\'t be processed due to different layer thickness')
 
-        if self.stack.resolution['x'] != self.ref_stack.resolution['x'] or \
-                self.stack.resolution['y'] != self.ref_stack.resolution['y']:
-            raise ValueError('Stacks can\'t be processed due to different resolution')
 
     def subtract(self):
         return self.ref_stack.pixel_data - self.stack.pixel_data
@@ -155,10 +159,23 @@ class ImageProcessingEngine:
             contour_list.append([contour[0][i, 0, 1], contour[0][i, 0, 0]])
         return contour_list
 
-    def draw_contour(self, contour, resolution, name):
+    def draw_contour(self, contour, resolution, name, bold=False):
         image = np.zeros((resolution[1], resolution[0]))
         for i, j in contour:
             image[i, j] = 1
+            if bold:
+                image[i + 1, j] = 1
+                image[i, j + 1] = 1
+                image[i + 1, j + 1] = 1
+                image[i - 1, j] = 1
+                image[i, j - 1] = 1
+                image[i - 1, j - 1] = 1
+                image[i + 1, j - 1] = 1
+                image[i - 1, j + 1] = 1
+                image[i + 2, j] = 1
+                image[i, j + 2] = 1
+                image[i - 2, j] = 1
+                image[i, j - 2] = 1
         self.save_binary_as_image(image, name)
         return image
 
@@ -298,40 +315,118 @@ class ImageProcessingEngine:
         mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
         mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
         meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
+        np.save(self.output_dir + 'poro.npy', poro_3d_ordered)
+
+    def get_physical_geometry(self, name, mesh_contour):
+        string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
+        for k in range(len(mesh_contour)):
+            i, j = mesh_contour[k]
+            string += 'Point(%d) = {0, %f, %f, lc};\n' % (k + 1, i, j)
+        for k in range(len(mesh_contour)):
+            if k == len(mesh_contour) - 1:
+                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
+            else:
+                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
+        string += 'Line Loop(%d) = {' % (len(mesh_contour) + 1)
+        for k in range(len(mesh_contour) - 1):
+            string += '%d, ' % (k + 1)
+        string += '%d};\n' % (len(mesh_contour))
+        string += 'Plane Surface(%d) = {%d};\n' % (len(mesh_contour) + 2, len(mesh_contour) + 1)
+        string += '\nExtrude{%f, 0, 0}\n' % (self.layer_thickness * self.stack.size / 1000)
+        string += '{\nSurface{%d}; Layers{%d}; Recombine;\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
+        # string += '{\nSurface{%d}; Layers{%d};\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
+        string += '\n\nPhysical Volume("Inner Volume") = {1};\n'
+        file = open(self.output_dir + name, "w+")
+        file.write(string)
+        file.close()
+
+    def generate_physical_mesh(self, mesh_contour):
+        physical_geo = 'physical.geo'
+        self.get_physical_geometry(physical_geo, mesh_contour)
+        self.generate_3d_mesh(physical_geo, 'physical_mesh.msh')
+        mesh = meshio.read('output/physical_mesh.msh')
+        mesh.points[:, 1:] = mesh.points[:, 1:] * self.pixel_spacing / 1000
+        # mesh.points[:, 0] = mesh.points[:, -1] * self.layer_thickness * self.stack.size / 1000
+        meshio.write(self.output_dir + 'physical_mesh_corrected.msh', mesh)
+
+    @staticmethod
+    def get_adjusted_mesh_contour(contour, elem_size):
+        # while True:
+        mesh_contour = [[contour[0][1], contour[0][0]]]
+        i = 0
+        while i < len(contour) - 1:
+            x = contour[i][0]
+            y = contour[i][1]
+            for j in range(i + 1, len(contour)):
+                x_n = contour[j][0]
+                y_n = contour[j][1]
+                dist = sqrt(
+                    abs(y - y_n) ** 2 + abs(x - x_n) ** 2
+                )
+                if dist >= elem_size:
+                    mesh_contour.append([y_n, x_n])
+                    i = j
+                    break
+                elif j == len(contour) - 1:
+                    i = j
+                    break
+        mesh_contour.pop(0)
+        return mesh_contour
+            # start_to_end = sqrt(
+            #     abs(mesh_contour[0][0] - mesh_contour[-1][0]) ** 2 + abs(mesh_contour[0][1] - mesh_contour[-1][1]) ** 2
+            # )
+            # if elem_size * 0.9 <= start_to_end <= elem_size * 1.1:
+            #     return mesh_contour
+            # elif start_to_end >= elem_size * 0.5:
+            #     elem_size += 1
+            # elif start_to_end < elem_size * 0.5:
+            #     elem_size -= 1
+            # elif elem_size >= 150 or elem_size <= 0:
+            #     raise RuntimeError('Impossible to satisfy element size condition')
+            # else:
+            #     raise RuntimeError('Undefined behavior')
+
+            # print('Element side length:', elem_size)
 
 
-class Stack:
-    def __init__(self, path, extension='.*IMA'):
-        self.path = path
-        self.extension = extension
-        self.names = self.read_file_names()
-        self.size = len(self.names)
-        self.resolution = self.get_resolution()
-        self.pixel_data = self.collect_pixel_data()
+# class Stack:
+#     def __init__(self, path, extension='.*IMA'):
+#         self.path = path
+#         self.extension = extension
+#         self.names = self.read_file_names()
+#         self.size = len(self.names)
+#         self.resolution = self.get_resolution()
+#         self.pixel_data = self.collect_pixel_data()
+#
+#     def read_file_names(self):
+#         """Scans folder with CT and gets slice names (.IMA format)"""
+#         files = os.listdir(self.path)
+#         files.sort()
+#         extension = re.compile(self.extension)
+#         images = list(filter(extension.match, files))
+#         return images
+#
+#     def get_resolution(self):
+#         """Determines resolution of an image (in pixels)"""
+#         instance = self.read_slice(0)
+#         resolution = {'y': instance.Rows,
+#                       'x': instance.Columns}
+#         return resolution
+#
+#     def read_slice(self, index):
+#         """Reads a single slice from stack"""
+#         slice_data = pydicom.dcmread(self.path + self.names[index])
+#         return slice_data
+#
+#     def collect_pixel_data(self):
+#         """Collects all slices into a single array"""
+#         matrix = np.zeros((self.size, self.resolution['y'], self.resolution['x']))
+#         for i in range(self.size):
+#             matrix[i] = self.read_slice(i).pixel_array
+#         return matrix
 
-    def read_file_names(self):
-        """Scans folder with CT and gets slice names (.IMA format)"""
-        files = os.listdir(self.path)
-        files.sort()
-        extension = re.compile(self.extension)
-        images = list(filter(extension.match, files))
-        return images
 
-    def get_resolution(self):
-        """Determines resolution of an image (in pixels)"""
-        instance = self.read_slice(0)
-        resolution = {'y': instance.Rows,
-                      'x': instance.Columns}
-        return resolution
 
-    def read_slice(self, index):
-        """Reads a single slice from stack"""
-        slice_data = pydicom.dcmread(self.path + self.names[index])
-        return slice_data
 
-    def collect_pixel_data(self):
-        """Collects all slices into a single array"""
-        matrix = np.zeros((self.size, self.resolution['y'], self.resolution['x']))
-        for i in range(self.size):
-            matrix[i] = self.read_slice(i).pixel_array
-        return matrix
+
+

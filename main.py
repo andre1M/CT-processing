@@ -1,11 +1,13 @@
 from engine import ImageProcessingEngine
 import time
 
+
 # Start timer
 start_time = time.time()
 
 # Initialize engine
-ipen = ImageProcessingEngine('output', 'filtered', 'brine', 'dry')
+ipen = ImageProcessingEngine()
+ipen.set('dry', 'brine', 'filtered', 'output')
 
 # Subtract stack pixel data from reference stack pixel data
 subtracted_pixel_data = ipen.subtract()
@@ -31,10 +33,11 @@ contour = ipen.get_mask_contour(mask)
 ipen.draw_contour(contour, mask.shape, 'contour.bmp')
 
 # Get mesh contour
-mesh_contour = ipen.get_mesh_contour(contour, 19)
+# mesh_contour = ipen.get_mesh_contour(contour, 10)
+mesh_contour = ipen.get_adjusted_mesh_contour(contour, 10)
 
 # Save mesh contour as image
-ipen.draw_contour(mesh_contour, mask.shape, 'mesh_contour.bmp')
+ipen.draw_contour(mesh_contour, mask.shape, 'mesh_contour.bmp', bold=False)
 
 # Write Gmsh geometry file
 ipen.write_gmsh_geometry(mesh_contour, 'core.geo')
@@ -56,6 +59,8 @@ ipen.run_fiji('macro.ijm')
 
 measurements = ipen.get_measurements('measurements.csv', 'fiji.msh')
 ipen.wrap_mesh(measurements, 'corrected_mesh.msh', 'fiji.msh')
+
+ipen.generate_physical_mesh(mesh_contour)
 
 # Stop timer and print time
 elapsed_time = round(time.time() - start_time, 2)
