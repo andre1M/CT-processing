@@ -13,14 +13,13 @@ class Stack:
 
     def get_info(self):
         """Determine stack crucial information"""
-        size = len(self.names)
         instance = self.read_slice(0)
         resolution = {'X': instance.Columns,
                       'Y': instance.Rows}
-        pixel_spacing = instance.PixelSpacing[0]
-        info = {'Stack size': size,
+        info = {'Stack size': len(self.names),
                 'Resolution': resolution,
-                'Pixel Spacing': pixel_spacing}
+                'Pixel spacing': instance.PixelSpacing[:],
+                'Slice thickness': instance.SliceThickness}
         return info
 
     def read_names(self):
@@ -35,8 +34,43 @@ class Stack:
         slice_data = pydicom.dcmread(self.path + self.names[index])
         return slice_data
 
-    # TODO: finish 'load' function. Sorting must be perform according to slice metadata and not by name
     def load(self):
         """Read, sort and collect slices into a single list"""
-        self.slices = None
-        pass
+        slices = []
+        for i in range(self.info['Stack size']):
+            slices.append(self.read_slice(i))
+        self.slices = self.merge_sort(slices)
+
+    def merge_sort(self, m):
+        """Recursive merge sort algorithm"""
+        if len(m) <= 1:
+            return m
+        # Split list in half
+        middle = len(m) // 2
+        left = m[:middle]
+        right = m[middle:]
+
+        left = self.merge_sort(left)
+        right = self.merge_sort(right)
+        return list(self.merge(left, right))
+
+    @staticmethod
+    def merge(left, right):
+        result = []
+        left_idx, right_idx = 0, 0
+        while left_idx < len(left) and right_idx < len(right):
+            # change the direction of this comparison to change the direction of the sort
+            if left[left_idx].SliceLocation <= right[right_idx].SliceLocation:
+                result.append(left[left_idx])
+                left_idx += 1
+            else:
+                result.append(right[right_idx])
+                right_idx += 1
+
+        if left:
+            result.extend(left[left_idx:])
+        if right:
+            result.extend(right[right_idx:])
+        return result
+
+
