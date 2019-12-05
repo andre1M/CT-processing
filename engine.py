@@ -11,20 +11,27 @@ import cv2
 import os
 
 
-class ImageProcessingEngine:
+class DoubleStackEngine:
     def __init__(self):
-        # Required paths
         self.paths = None
         self.stack = None
         self.ref_stack = None
+        self.pixel_data_diff = []
+        self.mask = None
+        self.clean_stack = None
+        self.save = None
 
     def set(self, stack_dir: str, ref_stack_dir: str, resulting_stack_dir: str, output_dir: str):
-        """Set paths to all required directories"""
+        """
+        Set paths to all required directories
+        """
         self.paths = PathContainer(stack_dir, ref_stack_dir, resulting_stack_dir, output_dir)
 
     def read(self):
-        """Read stacks and check their compatibility"""
-        # Initialize stack and reference stack objects
+        """
+        Read stacks and check their compatibility
+        """
+        # Initialize 'stack' and 'reference stack' objects
         self.stack = Stack(self.paths.stack)
         self.ref_stack = Stack(self.paths.ref_stack)
 
@@ -35,29 +42,181 @@ class ImageProcessingEngine:
             raise RuntimeError('Stacks can\'t be processed; stack resolutions don\'t match')
         elif self.stack.info['Pixel spacing'] != self.ref_stack.info['Pixel spacing']:
             raise RuntimeError('Stacks can\'t be processed; stack pixel spacings don\'t match')
+        elif self.stack.info['Slice thickness'] != self.ref_stack.info['Slice thickness']:
+            raise RuntimeError('Stacks can\'t be processed; stack layer thicknesses don\'t match')
         else:
             self.stack.load()
             self.ref_stack.load()
 
+    def clean(self, image_blur_ksize: tuple, image_threshold: float, mask_blur_ksize: tuple, mask_threshold: float,
+              image_blur_sigma=0, mask_blur_sigma=0):
+        """
+        Find pixel data difference and clean the background with mask
 
+        :param image_blur_ksize: height and width of Gaussian kernel; must contain exactly 2 odd integers.
+        :param image_threshold: threshold for image to binary conversion.
+        :param mask_blur_ksize: similar to image_blur_ksize but applied to mask to filter the residual noise.
+        :param mask_threshold: threshold to introduce sharp edges to the mask (optional)
+        :param image_blur_sigma: optional, see openCV documentation for Gaussian Blur.
+        :param mask_blur_sigma: optional, see openCV documentation for Gaussian Blur.
+        """
+        self._find_difference()
+        self._erase_background(image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
+                               image_blur_sigma, mask_blur_sigma)
 
-    def subtract(self):
-        return self.ref_stack.pixel_data - self.stack.pixel_data
+    # TODO: find a way to show two lines of pictures:
+    #   1. mask, first, middle and last slices with background,
+    #   2. empty image, first, middle and last slices without background.
+    def tune(self, image_blur_ksize: tuple, image_threshold: float, mask_blur_ksize: tuple, mask_threshold: float,
+             image_blur_sigma=0, mask_blur_sigma=0):
+        """
+        Tune parameters for further application of 'clean' method.
+
+        :param image_blur_ksize: height and width of Gaussian kernel; must contain exactly 2 odd integers.
+        :param image_threshold: threshold for image to binary conversion.
+        :param mask_blur_ksize: similar to image_blur_ksize but applied to mask to filter the residual noise.
+        :param mask_threshold: threshold to introduce sharp edges to the mask (optional)
+        :param image_blur_sigma: optional, see openCV documentation for Gaussian Blur.
+        :param mask_blur_sigma: optional, see openCV documentation for Gaussian Blur.
+        """
+        self._find_difference()
+        self._erase_background(image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
+                               image_blur_sigma, mask_blur_sigma)
+        # Show results
+        cv2.imshow("Mask (press any key to exit)", self.mask)
+        cv2.waitKey(0)           # waits until a key is pressed
+        cv2.destroyAllWindows()  # destroys the window showing image
+        exit()
+
+        # blank_image = np.zeros(self.mask.shape)
+        # start = self.clean_stack[0]
+        # middle = np.array(self.clean_stack[self.clean_stack.shape[0] // 2], dtype=np.uint16)
+        # end = self.clean_stack[-1]
+        #
+        # cv2.imshow("Press any key to exit", np.hstack((self.mask * 2 ** 16, start, middle, end)))
+        # cv2.waitKey(0)           # waits until a key is pressed
+        # cv2.destroyAllWindows()  # destroys the window showing image
+        # exit()
 
     @staticmethod
-    def blur(image, ksize):
-        """Blurs an image"""
-        return cv2.GaussianBlur(src=image,
-                                ksize=(ksize, ksize),
-                                sigmaX=0)
+    def _rescale_pixel_array(ct_slice):
+        """
+        Rescale pixel data using U = m * SV + b,
+        where U -- output, m -- rescale slope, SV -- stored value and b -- rescale intercept.
+        """
+        return ct_slice.RescaleSlope * ct_slice.pixel_array + ct_slice.RescaleIntercept
 
-    def get_binary(self, image, threshold, ksize):
-        """Converts image to binary"""
-        _, binary = cv2.threshold(src=self.blur(image, ksize),
-                                  thresh=threshold,
-                                  maxval=1,
+    def _find_difference(self):
+        """
+        Calculate pixel data difference.
+        """
+        for i in range(self.stack.info['Stack size']):
+            # Rescale pixel data
+            ref_pixel_array = self._rescale_pixel_array(self.ref_stack.slices[i])
+            pixel_array = self._rescale_pixel_array(self.stack.slices[i])
+            # Calculate difference
+            self.pixel_data_diff.append(ref_pixel_array - pixel_array)
+
+    def _erase_background(self, image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
+                          image_blur_sigma, mask_blur_sigma):
+        """
+        Erase background with mask
+        """
+        self._evaluate_mask(image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
+                            image_blur_sigma, mask_blur_sigma)
+        self.clean_stack = np.multiply(np.array(self.pixel_data_diff), self.mask)
+
+    def _evaluate_mask(self, image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
+                       image_blur_sigma, mask_blur_sigma):
+        """
+        Evaluate the core representing mask
+        """
+        binary = []
+        for i in range(self.stack.info['Stack size']):
+            blurred = self._blur(self.pixel_data_diff[i], image_blur_ksize, image_blur_sigma)
+            binary.append(self._convert_to_binary(blurred, image_threshold))
+
+        mask = np.zeros((binary[0].shape[0], binary[0].shape[1]))
+        start = int(self.stack.info['Stack size'] * 0.05)
+        stop = int(self.stack.info['Stack size'] * 0.95)
+        for i in range(start, stop):
+            mask = mask + binary[i]
+        mask = self._blur(mask, mask_blur_ksize, mask_blur_sigma)
+        self.mask = self._convert_to_binary(mask, mask_threshold)
+
+    @staticmethod
+    def _blur(src, ksize, sigma):
+        """
+        Blur an image
+        """
+        if isinstance(sigma, tuple):
+            if len(sigma) == 2:
+                sigma_x = sigma[0]
+                sigma_y = sigma[1]
+                return cv2.GaussianBlur(src=src,
+                                        ksize=ksize,
+                                        sigmaX=sigma_x,
+                                        sigmaY=sigma_y)
+        elif isinstance(sigma, float) or isinstance(sigma, int):
+            sigma_x = sigma
+            return cv2.GaussianBlur(src=src,
+                                    ksize=ksize,
+                                    sigmaX=sigma_x)
+        else:
+            raise ValueError('\'sigma\' variable must contain either 1 or 2 values')
+
+    @staticmethod
+    def _convert_to_binary(src, image_threshold, max_val=1):
+        _, binary = cv2.threshold(src=src,
+                                  thresh=image_threshold,
+                                  maxval=max_val,
                                   type=cv2.THRESH_BINARY)
         return binary
+
+    # TODO: finish method and attributes description
+    def kalman_filter(self, gain, percent_var, n_runs: int, scheme=0):
+        """
+        Kalman stack filter
+
+        :param gain: Kalman filter gain
+        :param percent_var:
+        :param n_runs: number of runs the filter would go through the stack
+        :param scheme: 0 -- alternate between forward and reverse filtering direction each run
+                       1 -- forward filtering direction
+                       2 -- reverse filtering direction
+        """
+        # if reverse:
+        #     stack_pixel_data = np.flip(stack_pixel_data, axis=0)
+        #
+        # # Copy last slice to the end of the stack
+        # stack_pixel_data = np.concatenate((stack_pixel_data, stack_pixel_data[-1:, :, :]))
+        #
+        # # Set up priors
+        # noise_var = percent_var
+        # predicted = stack_pixel_data[0, :, :]
+        # predicted_var = noise_var
+        #
+        # for i in range(0, stack_pixel_data.shape[0] - 1):
+        #     observed = stack_pixel_data[i + 1, :, :]
+        #     kalman = np.divide(predicted_var, np.add(predicted_var, noise_var))
+        #     corrected = gain * predicted + (1 - gain) * observed + np.multiply(kalman, np.subtract(observed, predicted))
+        #     corrected_var = np.multiply(predicted_var, (1 - kalman))
+        #
+        #     predicted_var = corrected_var
+        #     predicted = corrected
+        #     stack_pixel_data[i + 1, :, :] = corrected
+        #
+        # stack_pixel_data = stack_pixel_data[:-1, :, :]
+        # if reverse:
+        #     stack_pixel_data = np.flip(stack_pixel_data, axis=0)
+        # return stack_pixel_data
+        pass
+
+    # TODO: finish method
+    def gaussian_blur(self):
+        pass
+
+
 
     def save_binary_as_image(self, binary_pixel_array, name, increase_contrast=True):
         """Saves data array as a binary image"""
@@ -67,12 +226,16 @@ class ImageProcessingEngine:
         try:
             im = Image.fromarray(data)
             im = im.convert('L')
-            im.save(self.output_dir + name)
+            im.save(self.paths.output + name)
         except TypeError:
             data = cv2.convertScaleAbs(data)
             im = Image.fromarray(data)
             im = im.convert('L')
-            im.save(self.output_dir + name)
+            im.save(self.paths.output + name)
+
+
+
+
 
     def save_as_image(self, instance_slice, pixel_data, name):
         """Saves data array as image without scaling"""
@@ -372,22 +535,21 @@ class ImageProcessingEngine:
                     break
         mesh_contour.pop(0)
         return mesh_contour
-            # start_to_end = sqrt(
-            #     abs(mesh_contour[0][0] - mesh_contour[-1][0]) ** 2 + abs(mesh_contour[0][1] - mesh_contour[-1][1]) ** 2
-            # )
-            # if elem_size * 0.9 <= start_to_end <= elem_size * 1.1:
-            #     return mesh_contour
-            # elif start_to_end >= elem_size * 0.5:
-            #     elem_size += 1
-            # elif start_to_end < elem_size * 0.5:
-            #     elem_size -= 1
-            # elif elem_size >= 150 or elem_size <= 0:
-            #     raise RuntimeError('Impossible to satisfy element size condition')
-            # else:
-            #     raise RuntimeError('Undefined behavior')
+        # start_to_end = sqrt(
+        #     abs(mesh_contour[0][0] - mesh_contour[-1][0]) ** 2 + abs(mesh_contour[0][1] - mesh_contour[-1][1]) ** 2
+        # )
+        # if elem_size * 0.9 <= start_to_end <= elem_size * 1.1:
+        #     return mesh_contour
+        # elif start_to_end >= elem_size * 0.5:
+        #     elem_size += 1
+        # elif start_to_end < elem_size * 0.5:
+        #     elem_size -= 1
+        # elif elem_size >= 150 or elem_size <= 0:
+        #     raise RuntimeError('Impossible to satisfy element size condition')
+        # else:
+        #     raise RuntimeError('Undefined behavior')
 
-            # print('Element side length:', elem_size)
-
+        # print('Element side length:', elem_size)
 
 # class Stack:
 #     def __init__(self, path, extension='.*IMA'):
@@ -424,9 +586,3 @@ class ImageProcessingEngine:
 #         for i in range(self.size):
 #             matrix[i] = self.read_slice(i).pixel_array
 #         return matrix
-
-
-
-
-
-

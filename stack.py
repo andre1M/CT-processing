@@ -72,5 +72,3 @@ class Stack:
         if right:
             result.extend(right[right_idx:])
         return result
-
-
