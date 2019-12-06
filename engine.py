@@ -1,8 +1,9 @@
 from path_container import PathContainer
+from discretizer import Discretizer
 from stack import Stack
+from saver import Saver
 
 from math import sqrt
-from PIL import Image
 import pandas as pd
 import numpy as np
 import pydicom
@@ -18,14 +19,17 @@ class DoubleStackEngine:
         self.ref_stack = None
         self.pixel_data_diff = []
         self.mask = None
-        self.clean_stack = None
+        self.clean_pixel_data = None
+        self.filtered_pixel_data = None
         self.save = None
+        self.discretizer = None
 
     def set(self, stack_dir: str, ref_stack_dir: str, resulting_stack_dir: str, output_dir: str):
         """
         Set paths to all required directories
         """
         self.paths = PathContainer(stack_dir, ref_stack_dir, resulting_stack_dir, output_dir)
+        self.save = Saver(self.paths.output, self.paths.resulting_stack)
 
     def read(self):
         """
@@ -124,7 +128,7 @@ class DoubleStackEngine:
         """
         self._evaluate_mask(image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
                             image_blur_sigma, mask_blur_sigma)
-        self.clean_stack = np.multiply(np.array(self.pixel_data_diff), self.mask)
+        self.clean_pixel_data = np.multiply(np.array(self.pixel_data_diff), self.mask)
 
     def _evaluate_mask(self, image_blur_ksize, image_threshold, mask_blur_ksize, mask_threshold,
                        image_blur_sigma, mask_blur_sigma):
@@ -173,65 +177,84 @@ class DoubleStackEngine:
                                   type=cv2.THRESH_BINARY)
         return binary
 
-    # TODO: finish method and attributes description
+    # TODO: finish attributes description
     def kalman_filter(self, gain, percent_var, n_runs: int, scheme=0):
         """
         Kalman stack filter
 
-        :param gain: Kalman filter gain
+        :param gain:
         :param percent_var:
         :param n_runs: number of runs the filter would go through the stack
         :param scheme: 0 -- alternate between forward and reverse filtering direction each run
                        1 -- forward filtering direction
                        2 -- reverse filtering direction
         """
-        # if reverse:
-        #     stack_pixel_data = np.flip(stack_pixel_data, axis=0)
-        #
-        # # Copy last slice to the end of the stack
-        # stack_pixel_data = np.concatenate((stack_pixel_data, stack_pixel_data[-1:, :, :]))
-        #
-        # # Set up priors
-        # noise_var = percent_var
-        # predicted = stack_pixel_data[0, :, :]
-        # predicted_var = noise_var
-        #
-        # for i in range(0, stack_pixel_data.shape[0] - 1):
-        #     observed = stack_pixel_data[i + 1, :, :]
-        #     kalman = np.divide(predicted_var, np.add(predicted_var, noise_var))
-        #     corrected = gain * predicted + (1 - gain) * observed + np.multiply(kalman, np.subtract(observed, predicted))
-        #     corrected_var = np.multiply(predicted_var, (1 - kalman))
-        #
-        #     predicted_var = corrected_var
-        #     predicted = corrected
-        #     stack_pixel_data[i + 1, :, :] = corrected
-        #
-        # stack_pixel_data = stack_pixel_data[:-1, :, :]
-        # if reverse:
-        #     stack_pixel_data = np.flip(stack_pixel_data, axis=0)
-        # return stack_pixel_data
-        pass
+        i = 0
+        self.filtered_pixel_data = self.clean_pixel_data
+        if scheme == 0:
+            reverse = False
+            while i in range(n_runs):
+                self._kalman(gain, percent_var, reverse)
+                i += 1
+                reverse = not reverse
 
-    # TODO: finish method
+        elif scheme == 1:
+            reverse = False
+            while i in range(n_runs):
+                self._kalman(gain, percent_var, reverse)
+                i += 1
+
+        elif scheme == 2:
+            reverse = True
+            while i in range(n_runs):
+                self._kalman(gain, percent_var, reverse)
+                i += 1
+        else:
+            raise ValueError('\'scheme\' must have an integer value of either 0, 1 or 2')
+
+    def _kalman(self, gain, percent_var, reverse):
+        if reverse:
+            self.filtered_pixel_data = np.flip(self.filtered_pixel_data, axis=0)
+
+        # Copy last slice to the end of the stack
+        self.filtered_pixel_data = np.concatenate((self.filtered_pixel_data, self.filtered_pixel_data[-1:, :, :]))
+
+        # Set up priors
+        noise_var = percent_var
+        predicted = self.filtered_pixel_data[0, :, :]
+        predicted_var = noise_var
+
+        for i in range(0, self.filtered_pixel_data.shape[0] - 1):
+            observed = self.filtered_pixel_data[i + 1, :, :]
+            kalman = np.divide(predicted_var, np.add(predicted_var, noise_var))
+            corrected = gain * predicted + (1 - gain) * observed + np.multiply(kalman, np.subtract(observed, predicted))
+            corrected_var = np.multiply(predicted_var, (1 - kalman))
+
+            predicted_var = corrected_var
+            predicted = corrected
+            self.filtered_pixel_data[i + 1, :, :] = corrected
+
+        self.filtered_pixel_data = self.filtered_pixel_data[:-1, :, :]
+        if reverse:
+            self.filtered_pixel_data = np.flip(self.filtered_pixel_data, axis=0)
+
+    # TODO: finish method (optional, for later versions)
     def gaussian_blur(self):
         pass
 
+    # TODO: finish method
+    def discretize(self, elem_side_length):
+        self.discretizer = Discretizer(self.paths.output, self.mask)
+        self.discretizer.evaluate_geometry(elem_side_length)
+        self.discretizer.mesh()
+        # self.save.mesh()
+        pass
+
+    # TODO: finish method
+    def measure(self):
+        pass
 
 
-    def save_binary_as_image(self, binary_pixel_array, name, increase_contrast=True):
-        """Saves data array as a binary image"""
-        data = np.array(binary_pixel_array)
-        if increase_contrast:
-            data[data > 0] = 255
-        try:
-            im = Image.fromarray(data)
-            im = im.convert('L')
-            im.save(self.paths.output + name)
-        except TypeError:
-            data = cv2.convertScaleAbs(data)
-            im = Image.fromarray(data)
-            im = im.convert('L')
-            im.save(self.paths.output + name)
 
 
 
@@ -272,43 +295,6 @@ class DoubleStackEngine:
             clean_stack_pixel_data[i] = stack_pixel_data[i] * mask
         clean_stack_pixel_data[clean_stack_pixel_data == -0] = 0
         return clean_stack_pixel_data + correction
-
-    @staticmethod
-    def kalman_stack_filter(stack_pixel_data, gain, percent_var, reverse=False):
-        """Applies Kalman stack filter"""
-        if reverse:
-            stack_pixel_data = np.flip(stack_pixel_data, axis=0)
-
-        # Copy last slice to the end of the stack
-        stack_pixel_data = np.concatenate((stack_pixel_data, stack_pixel_data[-1:, :, :]))
-
-        # Set up priors
-        noise_var = percent_var
-        predicted = stack_pixel_data[0, :, :]
-        predicted_var = noise_var
-
-        for i in range(0, stack_pixel_data.shape[0] - 1):
-            observed = stack_pixel_data[i + 1, :, :]
-            kalman = np.divide(predicted_var, np.add(predicted_var, noise_var))
-            corrected = gain * predicted + (1 - gain) * observed + np.multiply(kalman, np.subtract(observed, predicted))
-            corrected_var = np.multiply(predicted_var, (1 - kalman))
-
-            predicted_var = corrected_var
-            predicted = corrected
-            stack_pixel_data[i + 1, :, :] = corrected
-
-        stack_pixel_data = stack_pixel_data[:-1, :, :]
-        if reverse:
-            stack_pixel_data = np.flip(stack_pixel_data, axis=0)
-        return stack_pixel_data
-
-    def save_stack(self, data, naming_convention, extension):
-        """Saves data array as image without scaling"""
-        for i in range(data.shape[0]):
-            template_slice = self.stack.read_slice(i)
-            template_slice.PixelData = np.array(data[i], dtype=template_slice.pixel_array.dtype).tobytes()
-            pydicom.filewriter.dcmwrite(self.resulting_stack_dir + naming_convention + str(i + 1) + '.' + extension,
-                                        template_slice)
 
     @staticmethod
     def get_mask_contour(mask):

@@ -6,30 +6,43 @@ import time
 start_time = time.time()
 
 # Initialize engine
-dsen = DoubleStackEngine()
+dse = DoubleStackEngine()
 
 # Set required information
-dsen.set('dry', 'brine', 'filtered', 'output')
+dse.set('dry', 'brine', 'filtered', 'output')
 
 # Read stacks
-dsen.read()
+dse.read()
 
-# dsen.tune(image_blur_ksize=(23, 23),
-#             image_threshold=120,
-#             image_blur_sigma=(0, 0),
-#             mask_blur_ksize=(41, 41),
-#             mask_threshold=65,
-#             mask_blur_sigma=0)
+# dsen.tune(image_blur_ksize=(25, 25),
+#           image_threshold=80,
+#           image_blur_sigma=(0, 0),
+#           mask_blur_ksize=(33, 33),
+#           mask_threshold=66,
+#           mask_blur_sigma=0)
 
 # Clean the background
-dsen.clean(image_blur_ksize=(23, 23),
-           image_threshold=120,
-           image_blur_sigma=(0, 0),
-           mask_blur_ksize=(41, 41),
-           mask_threshold=65,
-           mask_blur_sigma=0)
+dse.clean(image_blur_ksize=(25, 25),
+          image_threshold=100,
+          image_blur_sigma=(0, 0),
+          mask_blur_ksize=(33, 33),
+          mask_threshold=65,
+          mask_blur_sigma=0)
 
-# dsen.save_binary_as_image(dsen.mask, 'mask.bmp', True)
+# Save mask
+dse.save.binary(dse.mask, 'mask.bmp', increase_contrast=True)
+
+# Filter
+dse.kalman_filter(gain=0.75,
+                  percent_var=0.05,
+                  n_runs=3,
+                  scheme=0)
+
+# Save filtered pixel data as stack
+dse.save.stack(dse.filtered_pixel_data, dse.stack, 'filtered_')
+
+# Discretize core
+dse.discretize(elem_side_length=20)
 
 # Stop timer and print time
 elapsed_time = round(time.time() - start_time, 2)
