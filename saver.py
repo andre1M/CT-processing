@@ -8,9 +8,9 @@ import cv2
 # TODO: finish data saver class. Must be capable of saving pictures of different kinds.
 #  Will be initialized from DoubleStack class.
 class Saver:
-    def __init__(self, output_dir, stack_output_dir):
-        self.output = output_dir
-        self.stack_output = stack_output_dir
+    def __init__(self, paths, info):
+        self.paths = paths
+        self.stack_info = info
 
     def binary(self, binary_pixel_array, name, increase_contrast=True):
         """
@@ -22,12 +22,12 @@ class Saver:
         try:
             im = Image.fromarray(data)
             im = im.convert('L')
-            im.save(self.output + name)
+            im.save(self.paths.output + name)
         except TypeError:
             data = cv2.convertScaleAbs(data)
             im = Image.fromarray(data)
             im = im.convert('L')
-            im.save(self.output + name)
+            im.save(self.paths.output + name)
 
     def stack(self, pixel_array, stack_obj, naming_convention, extension='IMA'):
         """
@@ -37,12 +37,25 @@ class Saver:
         for i in range(stack.info['Stack size']):
             # noinspection PyPep8Naming
             stack.slices[i].PixelData = np.array(pixel_array[i], dtype=stack.slices[i].pixel_array.dtype).tobytes()
-            pydicom.filewriter.dcmwrite(self.stack_output + naming_convention + str(i + 1) + '.' + extension,
+            pydicom.filewriter.dcmwrite(self.paths.resulting_stack + naming_convention + str(i + 1) + '.' + extension,
                                         stack.slices[i])
 
-    # TODO: finish method
-    def measurements(self):
-        """
-        Save measurements as file
-        """
-        pass
+    def contour(self, pixel_array, name, bold=False):
+        image = np.zeros((self.stack_info['Resolution']['Y'], self.stack_info['Resolution']['X']))
+        for i, j in pixel_array:
+            image[i, j] = 1
+            if bold:
+                image[i + 1, j] = 1
+                image[i, j + 1] = 1
+                image[i + 1, j + 1] = 1
+                image[i - 1, j] = 1
+                image[i, j - 1] = 1
+                image[i - 1, j - 1] = 1
+                image[i + 1, j - 1] = 1
+                image[i - 1, j + 1] = 1
+                image[i + 2, j] = 1
+                image[i, j + 2] = 1
+                image[i - 2, j] = 1
+                image[i, j - 2] = 1
+        self.binary(image, name, True)
+        return image

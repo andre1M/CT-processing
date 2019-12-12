@@ -42,7 +42,10 @@ dse.kalman_filter(gain=0.75,
 dse.save.stack(dse.filtered_pixel_data, dse.stack, 'filtered_')
 
 # Discretize core
-dse.discretize(elem_side_length=20)
+dse.discretize(elem_side_length=3, name='mesh.msh')     # in mm
+
+# Take measurements
+measurements = dse.measure('measurements.csv')
 
 # Stop timer and print time
 elapsed_time = round(time.time() - start_time, 2)

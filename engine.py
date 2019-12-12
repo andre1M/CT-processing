@@ -4,7 +4,6 @@ from stack import Stack
 from saver import Saver
 
 from math import sqrt
-import pandas as pd
 import numpy as np
 import pydicom
 import meshio
@@ -29,7 +28,6 @@ class DoubleStackEngine:
         Set paths to all required directories
         """
         self.paths = PathContainer(stack_dir, ref_stack_dir, resulting_stack_dir, output_dir)
-        self.save = Saver(self.paths.output, self.paths.resulting_stack)
 
     def read(self):
         """
@@ -51,6 +49,7 @@ class DoubleStackEngine:
         else:
             self.stack.load()
             self.ref_stack.load()
+            self.save = Saver(self.paths, self.stack.info)
 
     def clean(self, image_blur_ksize: tuple, image_threshold: float, mask_blur_ksize: tuple, mask_threshold: float,
               image_blur_sigma=0, mask_blur_sigma=0):
@@ -180,12 +179,12 @@ class DoubleStackEngine:
     # TODO: finish attributes description
     def kalman_filter(self, gain, percent_var, n_runs: int, scheme=0):
         """
-        Kalman stack filter
+        Kalman stack filter interface
 
         :param gain:
         :param percent_var:
         :param n_runs: number of runs the filter would go through the stack
-        :param scheme: 0 -- alternate between forward and reverse filtering direction each run
+        :param scheme: 0 -- alternate between forward and reverse filtering directions each run
                        1 -- forward filtering direction
                        2 -- reverse filtering direction
         """
@@ -213,6 +212,9 @@ class DoubleStackEngine:
             raise ValueError('\'scheme\' must have an integer value of either 0, 1 or 2')
 
     def _kalman(self, gain, percent_var, reverse):
+        """
+        Kalman stack filter
+        """
         if reverse:
             self.filtered_pixel_data = np.flip(self.filtered_pixel_data, axis=0)
 
@@ -242,125 +244,56 @@ class DoubleStackEngine:
     def gaussian_blur(self):
         pass
 
-    # TODO: finish method
-    def discretize(self, elem_side_length):
-        self.discretizer = Discretizer(self.paths.output, self.mask)
+    def discretize(self, elem_side_length: float, name: str):
+        """
+        Discretize core and save mesh file
+
+        :param elem_side_length: side length of the element at the core boundary
+        :param name: name of the output mesh file, must have .msh extension
+        """
+        self.discretizer = Discretizer(self.stack.info, self.mask, self.paths, self.save)
         self.discretizer.evaluate_geometry(elem_side_length)
-        self.discretizer.mesh()
-        # self.save.mesh()
-        pass
+        self.discretizer.mesh(name)
+
+    def measure(self, results_name):
+        """
+        Take measurements with Fiji
+        """
+        self._generate_fiji_macro(results_name)
+        self._run_fiji()
 
     # TODO: finish method
-    def measure(self):
-        pass
-
-
-
-
-
-
-
-    def save_as_image(self, instance_slice, pixel_data, name):
-        """Saves data array as image without scaling"""
-        instance_slice.PixelData = np.array(pixel_data, dtype=instance_slice.pixel_array.dtype).tobytes()
-        pydicom.filewriter.dcmwrite(self.output_dir + name, instance_slice)
-
-    def get_mask(self, stack_pixel_data, threshold, ksize, app_range):
-        """Locates core in an image and creates mask"""
-        binary = np.zeros(stack_pixel_data.shape)
-        for i in range(binary.shape[0]):
-            binary[i] = self.get_binary(stack_pixel_data[i], threshold, ksize)
-
-        if isinstance(app_range, float):
-            approximation_range = [int(binary.shape[0] * app_range),
-                                   int(binary.shape[0] - binary.shape[0] * app_range)]
-        elif isinstance(app_range, list) and len(app_range) == 2:
-            approximation_range = [int(binary.shape[0] * app_range[0]),
-                                   int(binary.shape[0] - binary.shape[0] * app_range[1])]
-        else:
-            raise ValueError('app_range determines which fraction of slices will be excluded from the evaluation;'
-                             'Must be either a single value or two values (for both sides of a core)')
-
-        mask = np.zeros((binary.shape[1], binary.shape[2]))
-        for i in range(approximation_range[0], approximation_range[1]):
-            mask = mask + binary[i]
-        mask = self.get_binary(mask, 65, 37)
-        return mask
-
-    @staticmethod
-    def apply_mask(stack_pixel_data, mask, correction=0):
-        """Deletes any information beyond a core"""
-        clean_stack_pixel_data = np.zeros(stack_pixel_data.shape)
-        for i in range(stack_pixel_data.shape[0]):
-            clean_stack_pixel_data[i] = stack_pixel_data[i] * mask
-        clean_stack_pixel_data[clean_stack_pixel_data == -0] = 0
-        return clean_stack_pixel_data + correction
-
-    @staticmethod
-    def get_mask_contour(mask):
-        """Locates all contour points of a mask"""
-        im = np.array(mask, dtype='uint8')
-        contour, _ = cv2.findContours(image=im,
-                                      mode=cv2.RETR_EXTERNAL,
-                                      method=cv2.CHAIN_APPROX_NONE)
-        contour_list = []
-        for i in range(len(contour[0])):
-            contour_list.append([contour[0][i, 0, 1], contour[0][i, 0, 0]])
-        return contour_list
-
-    def draw_contour(self, contour, resolution, name, bold=False):
-        image = np.zeros((resolution[1], resolution[0]))
-        for i, j in contour:
-            image[i, j] = 1
-            if bold:
-                image[i + 1, j] = 1
-                image[i, j + 1] = 1
-                image[i + 1, j + 1] = 1
-                image[i - 1, j] = 1
-                image[i, j - 1] = 1
-                image[i - 1, j - 1] = 1
-                image[i + 1, j - 1] = 1
-                image[i - 1, j + 1] = 1
-                image[i + 2, j] = 1
-                image[i, j + 2] = 1
-                image[i - 2, j] = 1
-                image[i, j - 2] = 1
-        self.save_binary_as_image(image, name)
-        return image
-
-    def write_gmsh_geometry(self, contour, name):
-        """Generates a set of commands for Gmsh to create an object for further meshing"""
-        string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
-        for k in range(len(contour)):
-            i, j = contour[k]
-            string += 'Point(%d) = {%d, %d, 0, lc};\n' % (k + 1, j, i)
-        for k in range(len(contour)):
-            if k == len(contour) - 1:
-                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
-            else:
-                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
-        string += 'Line Loop(%d) = {' % (len(contour) + 1)
-        for k in range(len(contour) - 1):
-            string += '%d, ' % (k + 1)
-        string += '%d};\n' % (len(contour))
-        string += 'Plane Surface(%d) = {%d};\n' % (len(contour) + 2, len(contour) + 1)
-        string += '\nExtrude{0, 0, %.1f}\n' % (round(self.layer_thickness / self.pixel_spacing, 1) *
-                                               (self.stack.size - 1))
-        string += '{\nSurface{%d}; Layers{%d}; Recombine;\n}' % (len(contour) + 2, self.stack.size - 1)
-        file = open(self.output_dir + name, "w+")
+    def _generate_fiji_macro(self, results_name, processing=True):
+        mesh = self.discretizer.get_fiji_mesh()
+        elements = mesh.cells['triangle']
+        nodes = mesh.points
+        string = 'run("Image Sequence...", "open=%s sort");\n' % self.paths.resulting_stack
+        string += 'run("Gaussian Blur...", "sigma=2 stack");\n'
+        for i in range(len(elements)):
+            x1 = nodes[int(elements[i, 0]), 1]
+            y1 = nodes[int(elements[i, 0]), 0]
+            x2 = nodes[int(elements[i, 1]), 1]
+            y2 = nodes[int(elements[i, 1]), 0]
+            x3 = nodes[int(elements[i, 2]), 1]
+            y3 = nodes[int(elements[i, 2]), 0]
+            string += 'makePolygon(%d,%d,%d,%d,%d,%d);\nroiManager("Add");\n' % (x1, y1, x2, y2, x3, y3)
+        if processing:
+            for i in range(self.stack.size):
+                string += 'roiManager("Measure");\nrun("Next Slice [>]");\n'
+            string += 'saveAs("Measurements", "%s")\n' % (self.paths.output + results_name)
+            string += 'run("Quit");'
+        file = open(self.paths + 'macro.ijm', "w+")
         file.write(string)
         file.close()
 
-    @staticmethod
-    def get_mesh_contour(contour, grid_side_length):
-        mesh_contour = []
-        for i in range(0, len(contour) - grid_side_length, grid_side_length):
-            mesh_contour.append([contour[i][1], contour[i][0]])
-        return mesh_contour
+    def _run_fiji(self):
+        pass
 
-    def generate_3d_mesh(self, geo_file, name):
-        """Launch Gmsh and generate mesh for the defined geometry"""
-        os.system('gmsh %s -3 -o %s' % (self.output_dir + geo_file, self.output_dir + name))
+
+
+
+
+
 
     def correct_mesh(self, mesh_file):
         """Rounds mesh coordinates for nodes and convert y-axis coordinates;
@@ -521,54 +454,3 @@ class DoubleStackEngine:
                     break
         mesh_contour.pop(0)
         return mesh_contour
-        # start_to_end = sqrt(
-        #     abs(mesh_contour[0][0] - mesh_contour[-1][0]) ** 2 + abs(mesh_contour[0][1] - mesh_contour[-1][1]) ** 2
-        # )
-        # if elem_size * 0.9 <= start_to_end <= elem_size * 1.1:
-        #     return mesh_contour
-        # elif start_to_end >= elem_size * 0.5:
-        #     elem_size += 1
-        # elif start_to_end < elem_size * 0.5:
-        #     elem_size -= 1
-        # elif elem_size >= 150 or elem_size <= 0:
-        #     raise RuntimeError('Impossible to satisfy element size condition')
-        # else:
-        #     raise RuntimeError('Undefined behavior')
-
-        # print('Element side length:', elem_size)
-
-# class Stack:
-#     def __init__(self, path, extension='.*IMA'):
-#         self.path = path
-#         self.extension = extension
-#         self.names = self.read_file_names()
-#         self.size = len(self.names)
-#         self.resolution = self.get_resolution()
-#         self.pixel_data = self.collect_pixel_data()
-#
-#     def read_file_names(self):
-#         """Scans folder with CT and gets slice names (.IMA format)"""
-#         files = os.listdir(self.path)
-#         files.sort()
-#         extension = re.compile(self.extension)
-#         images = list(filter(extension.match, files))
-#         return images
-#
-#     def get_resolution(self):
-#         """Determines resolution of an image (in pixels)"""
-#         instance = self.read_slice(0)
-#         resolution = {'y': instance.Rows,
-#                       'x': instance.Columns}
-#         return resolution
-#
-#     def read_slice(self, index):
-#         """Reads a single slice from stack"""
-#         slice_data = pydicom.dcmread(self.path + self.names[index])
-#         return slice_data
-#
-#     def collect_pixel_data(self):
-#         """Collects all slices into a single array"""
-#         matrix = np.zeros((self.size, self.resolution['y'], self.resolution['x']))
-#         for i in range(self.size):
-#             matrix[i] = self.read_slice(i).pixel_array
-#         return matrix
