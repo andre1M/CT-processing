@@ -4,8 +4,8 @@ from stack import Stack
 from saver import Saver
 
 from math import sqrt
+import pandas as pd
 import numpy as np
-import pydicom
 import meshio
 import cv2
 import os
@@ -255,39 +255,73 @@ class DoubleStackEngine:
         self.discretizer.evaluate_geometry(elem_side_length)
         self.discretizer.mesh(name)
 
-    def measure(self, results_name):
+    def measure(self, results_name: str, test=False):
         """
-        Take measurements with Fiji
-        """
-        self._generate_fiji_macro(results_name)
-        self._run_fiji()
+        Take measurements with Fiji and perform postprocessing
 
-    # TODO: finish method
-    def _generate_fiji_macro(self, results_name, processing=True):
+        :param results_name: file name to be used to save Fiji readings
+        :param test: if True no processing step will be added to Fiji macro; measurements will not be taken;
+            script will be paused until Fiji is manually closed
+        """
+        mesh = self._generate_fiji_macro(results_name, test)
+        self._run_fiji()
+        measurements = self._rescale_measurements(results_name)
+        return self._resort_measurements(measurements, mesh)
+
+    def _generate_fiji_macro(self, results_name, test):
+        """
+        Generate macro instructions file for Fiji
+        """
         mesh = self.discretizer.get_fiji_mesh()
         elements = mesh.cells['triangle']
         nodes = mesh.points
         string = 'run("Image Sequence...", "open=%s sort");\n' % self.paths.resulting_stack
-        string += 'run("Gaussian Blur...", "sigma=2 stack");\n'
+        string += 'run("Gaussian Blur...", "sigma=3 stack");\n'
         for i in range(len(elements)):
-            x1 = nodes[int(elements[i, 0]), 1]
-            y1 = nodes[int(elements[i, 0]), 0]
-            x2 = nodes[int(elements[i, 1]), 1]
-            y2 = nodes[int(elements[i, 1]), 0]
-            x3 = nodes[int(elements[i, 2]), 1]
-            y3 = nodes[int(elements[i, 2]), 0]
+            x1 = nodes[int(elements[i, 0]), 2]
+            y1 = nodes[int(elements[i, 0]), 1]
+            x2 = nodes[int(elements[i, 1]), 2]
+            y2 = nodes[int(elements[i, 1]), 1]
+            x3 = nodes[int(elements[i, 2]), 2]
+            y3 = nodes[int(elements[i, 2]), 1]
             string += 'makePolygon(%d,%d,%d,%d,%d,%d);\nroiManager("Add");\n' % (x1, y1, x2, y2, x3, y3)
-        if processing:
-            for i in range(self.stack.size):
+        if not test:
+            for i in range(self.stack.info['Stack size']):
                 string += 'roiManager("Measure");\nrun("Next Slice [>]");\n'
             string += 'saveAs("Measurements", "%s")\n' % (self.paths.output + results_name)
             string += 'run("Quit");'
-        file = open(self.paths + 'macro.ijm', "w+")
+        file = open(self.paths.output + 'macro.ijm', "w+")
         file.write(string)
         file.close()
+        return mesh
 
     def _run_fiji(self):
-        pass
+        """
+        Launch Fiji to process macro
+        """
+        os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.paths.output + 'macro.ijm'))
+
+    def _rescale_measurements(self, name):
+        """
+        Read and rescale Fiji readings
+        """
+        df = pd.read_csv(self.paths.output + name)
+        mean_gray_scale = (
+                self.stack.slices[0].RescaleSlope * df['Mean'].values - self.stack.slices[0].RescaleIntercept
+        )
+        area = df['Area'].values
+        return {'Mean gray scale value': mean_gray_scale, 'Area': area}
+
+    def _resort_measurements(self, measurements, mesh):
+        elems_per_slice = mesh.cells['triangle'].shape[0]
+        measurements_resorted = {}
+        for key, data in measurements.items():
+            resorted = np.zeros(data.shape)
+            for i in range(elems_per_slice):
+                resorted[i * self.stack.info['Stack size']:(i + 1) * self.stack.info['Stack size']] = \
+                    data[i::elems_per_slice]
+            measurements_resorted[key] = resorted
+        return measurements_resorted
 
 
 
@@ -295,132 +329,52 @@ class DoubleStackEngine:
 
 
 
-    def correct_mesh(self, mesh_file):
-        """Rounds mesh coordinates for nodes and convert y-axis coordinates;
-        required because Fiji creates nodes only at pixel locations"""
-        mesh = meshio.read(self.output_dir + mesh_file)
-        # Get node coordinates and adapt them to the Fiji coordinate system
-        mesh.points[:, 0] = np.around(mesh.points[:, 0])
-        mesh.points[:, 1] = np.around(mesh.points[:, 1])
-        meshio.write_points_cells(self.output_dir + 'corrected_' + mesh_file, mesh.points,
-                                  {'wedge': mesh.cells['wedge']})
-        return 'corrected_' + mesh_file
 
-    def get_fiji_mesh(self, mesh_name, name):
-        """Extracts 2D mesh slice from 3D mesh file"""
-        mesh = meshio.read(self.output_dir + mesh_name)
-        indices = np.array([])
-        nodes = np.array([[0, 0, 0]])
-        # Get all nodes that belong to the first layer with their indices
-        for i in range(mesh.points.shape[0]):
-            if mesh.points[i, 2] == 0:
-                indices = np.append(indices, i)
-                entity = mesh.points[i, :][np.newaxis]
-                nodes = np.concatenate((nodes, entity), axis=0)
-        nodes = nodes[1:, :]
-        # Get all triangles that belong to the first layer
-        elements = np.array([[0, 0, 0]])
-        for i in range(mesh.cells['wedge'].shape[0]):
-            c = 0
-            triangle = np.zeros(3)
-            for j in range(mesh.cells['wedge'].shape[1]):
-                if mesh.cells['wedge'][i, j] in indices:
-                    triangle[c] = mesh.cells['wedge'][i, j]
-                    c += 1
-            if c == 3:
-                new_triangle = np.zeros(3)[np.newaxis]
-                for k in range(c):
-                    new_triangle[0, k] = np.where(indices == triangle[k])[0]
-                elements = np.concatenate((elements, new_triangle), axis=0)
-        elements = elements[1:, :]
-        meshio.write_points_cells(self.output_dir + name, nodes, {'triangle': elements.astype(int)})
 
-    def generate_macro(self, fiji_mesh, measurements_file, name, with_processing=True):
-        """Generate Fiji macro commands to discretize and process stack"""
-        mesh = meshio.read(self.output_dir + fiji_mesh)
-        elements = mesh.cells['triangle']
-        nodes = mesh.points
-        string = 'run("Image Sequence...", "open=%s sort");\n' % self.resulting_stack_dir
-        string += 'run("Gaussian Blur...", "sigma=2 stack");\n'
-        for i in range(len(elements)):
-            x1 = nodes[int(elements[i, 0]), 1]
-            y1 = nodes[int(elements[i, 0]), 0]
-            x2 = nodes[int(elements[i, 1]), 1]
-            y2 = nodes[int(elements[i, 1]), 0]
-            x3 = nodes[int(elements[i, 2]), 1]
-            y3 = nodes[int(elements[i, 2]), 0]
-            string += 'makePolygon(%d,%d,%d,%d,%d,%d);\nroiManager("Add");\n' % (x1, y1, x2, y2, x3, y3)
-        if with_processing:
-            for i in range(self.stack.size):
-                string += 'roiManager("Measure");\nrun("Next Slice [>]");\n'
-            string += 'saveAs("Measurements", "%s")\n' % (self.output_dir + measurements_file)
-            string += 'run("Quit");'
-        file = open(self.output_dir + name, "w+")
-        file.write(string)
-        file.close()
 
-    def run_fiji(self, macro):
-        os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.output_dir + macro))
-
-    def get_measurements(self, measurements_file, mesh):
-        """Extract mean grey level and area values per mesh element from Fiji output;
-        available only when resulting .csv file is supplied"""
-        elements = meshio.read(self.output_dir + mesh).cells['triangle']
-        measurements_raw_data = pd.read_csv(self.output_dir + measurements_file)
-        poro_per_element = measurements_raw_data['Mean'].values / 1000
-        area_per_element = measurements_raw_data['Area'].values
-
-        if len(poro_per_element) == self.stack.size * elements.shape[0] and \
-                len(area_per_element) == self.stack.size * elements.shape[0]:
-            print('\nProcessing complete successfully. No data is lost')
-        else:
-            raise ValueError('\nProcessing complete with errors. Some data is lost')
-        return {'poro': poro_per_element,
-                'area': area_per_element}
-
-    def wrap_mesh(self, measurements, mesh, mesh_2d):
-        mesh_3d = meshio.read(self.output_dir + mesh)
-        mesh_2d = meshio.read(self.output_dir + mesh_2d)
-        elements = mesh_2d.cells['triangle']
-        poro_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
-        vol_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
-        poro_3d = np.zeros(len(elements) * (self.stack.size - 1))
-
-        for i in range(len(poro_3d)):
-            poro_3d[i] = (measurements['poro'][i] + measurements['poro'][len(elements) + i]) / 2
-
-        for i in range(len(elements)):
-            poro_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = poro_3d[i::len(elements)]
-            vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
-                measurements['area'][i] * self.layer_thickness * 1e-9
-
-        mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
-        mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
-        meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
-        np.save(self.output_dir + 'poro.npy', poro_3d_ordered)
-
-    def get_physical_geometry(self, name, mesh_contour):
-        string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
-        for k in range(len(mesh_contour)):
-            i, j = mesh_contour[k]
-            string += 'Point(%d) = {0, %f, %f, lc};\n' % (k + 1, i, j)
-        for k in range(len(mesh_contour)):
-            if k == len(mesh_contour) - 1:
-                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
-            else:
-                string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
-        string += 'Line Loop(%d) = {' % (len(mesh_contour) + 1)
-        for k in range(len(mesh_contour) - 1):
-            string += '%d, ' % (k + 1)
-        string += '%d};\n' % (len(mesh_contour))
-        string += 'Plane Surface(%d) = {%d};\n' % (len(mesh_contour) + 2, len(mesh_contour) + 1)
-        string += '\nExtrude{%f, 0, 0}\n' % (self.layer_thickness * self.stack.size / 1000)
-        string += '{\nSurface{%d}; Layers{%d}; Recombine;\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
-        # string += '{\nSurface{%d}; Layers{%d};\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
-        string += '\n\nPhysical Volume("Inner Volume") = {1};\n'
-        file = open(self.output_dir + name, "w+")
-        file.write(string)
-        file.close()
+    # def wrap_mesh(self, measurements, mesh, mesh_2d):
+    #     mesh_3d = meshio.read(self.output_dir + mesh)
+    #     mesh_2d = meshio.read(self.output_dir + mesh_2d)
+    #     elements = mesh_2d.cells['triangle']
+    #     poro_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+    #     vol_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
+    #     poro_3d = np.zeros(len(elements) * (self.stack.size - 1))
+    #
+    #     for i in range(len(poro_3d)):
+    #         poro_3d[i] = (measurements['poro'][i] + measurements['poro'][len(elements) + i]) / 2
+    #
+    #     for i in range(len(elements)):
+    #         poro_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = poro_3d[i::len(elements)]
+    #         vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
+    #             measurements['area'][i] * self.layer_thickness * 1e-9
+    #
+    #     mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
+    #     mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
+    #     meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
+    #     np.save(self.output_dir + 'poro.npy', poro_3d_ordered)
+    #
+    # def get_physical_geometry(self, name, mesh_contour):
+    #     string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
+    #     for k in range(len(mesh_contour)):
+    #         i, j = mesh_contour[k]
+    #         string += 'Point(%d) = {0, %f, %f, lc};\n' % (k + 1, i, j)
+    #     for k in range(len(mesh_contour)):
+    #         if k == len(mesh_contour) - 1:
+    #             string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
+    #         else:
+    #             string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
+    #     string += 'Line Loop(%d) = {' % (len(mesh_contour) + 1)
+    #     for k in range(len(mesh_contour) - 1):
+    #         string += '%d, ' % (k + 1)
+    #     string += '%d};\n' % (len(mesh_contour))
+    #     string += 'Plane Surface(%d) = {%d};\n' % (len(mesh_contour) + 2, len(mesh_contour) + 1)
+    #     string += '\nExtrude{%f, 0, 0}\n' % (self.layer_thickness * self.stack.size / 1000)
+    #     string += '{\nSurface{%d}; Layers{%d}; Recombine;\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
+    #     # string += '{\nSurface{%d}; Layers{%d};\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
+    #     string += '\n\nPhysical Volume("Inner Volume") = {1};\n'
+    #     file = open(self.output_dir + name, "w+")
+    #     file.write(string)
+    #     file.close()
 
     def generate_physical_mesh(self, mesh_contour):
         physical_geo = 'physical.geo'
@@ -430,27 +384,3 @@ class DoubleStackEngine:
         mesh.points[:, 1:] = mesh.points[:, 1:] * self.pixel_spacing / 1000
         # mesh.points[:, 0] = mesh.points[:, -1] * self.layer_thickness * self.stack.size / 1000
         meshio.write(self.output_dir + 'physical_mesh_corrected.msh', mesh)
-
-    @staticmethod
-    def get_adjusted_mesh_contour(contour, elem_size):
-        # while True:
-        mesh_contour = [[contour[0][1], contour[0][0]]]
-        i = 0
-        while i < len(contour) - 1:
-            x = contour[i][0]
-            y = contour[i][1]
-            for j in range(i + 1, len(contour)):
-                x_n = contour[j][0]
-                y_n = contour[j][1]
-                dist = sqrt(
-                    abs(y - y_n) ** 2 + abs(x - x_n) ** 2
-                )
-                if dist >= elem_size:
-                    mesh_contour.append([y_n, x_n])
-                    i = j
-                    break
-                elif j == len(contour) - 1:
-                    i = j
-                    break
-        mesh_contour.pop(0)
-        return mesh_contour

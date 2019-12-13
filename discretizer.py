@@ -1,5 +1,6 @@
 from scipy.interpolate import interp1d
 import numpy as np
+import meshio
 import cv2
 import os
 
@@ -63,6 +64,8 @@ class Discretizer:
         for i in range(len(x_new)):
             self.mesh_contour.append(coord[i].astype(int))
 
+    # TODO: adjust mesh coordinates conversion to meters from pixels;
+    #   check if mesh contour is correct in regard to units
     def mesh(self, name, geo_name=''):
         """
         Launch Gmsh and discretize evaluated geometry
@@ -70,6 +73,14 @@ class Discretizer:
         if not geo_name:
             geo_name = self.geometry_name
         os.system('gmsh %s -3 -o %s' % (self.paths.output + geo_name, self.paths.output + name))
+        mesh = meshio.read(self.paths.output + name)
+        mesh.points[:, 1:] = np.around(mesh.points[:, 1:])
+
+        # Adjust coordinates to real values
+        mesh.points[:, 0] = mesh.points[:, 0] * self.stack_info['Slice thickness'] / 100
+        mesh.points[:, 1] = mesh.points[:, 1] * self.stack_info['Pixel spacing'][0] / 100
+        mesh.points[:, 2] = mesh.points[:, 2] * self.stack_info['Pixel spacing'][1] / 100
+        meshio.write(self.paths.output + name, mesh)
 
     def write_geometry(self):
         """
@@ -111,4 +122,6 @@ class Discretizer:
         return self.prepare_mesh('fiji.msh')
 
     def prepare_mesh(self, name):
-        pass
+        mesh = meshio.read(self.paths.output + name)
+        mesh.points = np.around(mesh.points)
+        return mesh
