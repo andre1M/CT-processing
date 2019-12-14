@@ -3,10 +3,8 @@ from discretizer import Discretizer
 from stack import Stack
 from saver import Saver
 
-from math import sqrt
 import pandas as pd
 import numpy as np
-import meshio
 import cv2
 import os
 
@@ -91,6 +89,7 @@ class DoubleStackEngine:
         cv2.destroyAllWindows()  # destroys the window showing image
         exit()
 
+        # ==================================== Prototype ====================================
         # blank_image = np.zeros(self.mask.shape)
         # start = self.clean_stack[0]
         # middle = np.array(self.clean_stack[self.clean_stack.shape[0] // 2], dtype=np.uint16)
@@ -100,6 +99,7 @@ class DoubleStackEngine:
         # cv2.waitKey(0)           # waits until a key is pressed
         # cv2.destroyAllWindows()  # destroys the window showing image
         # exit()
+        # ==================================== Prototype ====================================
 
     @staticmethod
     def _rescale_pixel_array(ct_slice):
@@ -139,9 +139,11 @@ class DoubleStackEngine:
             blurred = self._blur(self.pixel_data_diff[i], image_blur_ksize, image_blur_sigma)
             binary.append(self._convert_to_binary(blurred, image_threshold))
 
-        mask = np.zeros((binary[0].shape[0], binary[0].shape[1]))
+        # To avoid anomalies in the mask that may be introduced by close to core ends slices
         start = int(self.stack.info['Stack size'] * 0.05)
         stop = int(self.stack.info['Stack size'] * 0.95)
+
+        mask = np.zeros((binary[0].shape[0], binary[0].shape[1]))
         for i in range(start, stop):
             mask = mask + binary[i]
         mask = self._blur(mask, mask_blur_ksize, mask_blur_sigma)
@@ -343,63 +345,3 @@ class DoubleStackEngine:
                      data[i * self.stack.info['Stack size'] + 1:(i + 1) * self.stack.info['Stack size']]) / 2
             measurements_3d[key] = evaluated
         return measurements_3d
-
-
-
-
-
-
-
-
-    # def wrap_mesh(self, measurements, mesh, mesh_2d):
-    #     mesh_3d = meshio.read(self.output_dir + mesh)
-    #     mesh_2d = meshio.read(self.output_dir + mesh_2d)
-    #     elements = mesh_2d.cells['triangle']
-    #     poro_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
-    #     vol_3d_ordered = np.zeros(len(elements) * (self.stack.size - 1))
-    #     poro_3d = np.zeros(len(elements) * (self.stack.size - 1))
-    #
-    #     for i in range(len(poro_3d)):
-    #         poro_3d[i] = (measurements['poro'][i] + measurements['poro'][len(elements) + i]) / 2
-    #
-    #     for i in range(len(elements)):
-    #         poro_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = poro_3d[i::len(elements)]
-    #         vol_3d_ordered[i * (self.stack.size - 1):(i + 1) * (self.stack.size - 1)] = \
-    #             measurements['area'][i] * self.layer_thickness * 1e-9
-    #
-    #     mesh_3d.cell_data['wedge']['porosity'] = poro_3d_ordered
-    #     mesh_3d.cell_data['wedge']['volume'] = vol_3d_ordered
-    #     meshio.write(self.output_dir + 'mesh_final.vtk', mesh_3d)
-    #     np.save(self.output_dir + 'poro.npy', poro_3d_ordered)
-    #
-    # def get_physical_geometry(self, name, mesh_contour):
-    #     string = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
-    #     for k in range(len(mesh_contour)):
-    #         i, j = mesh_contour[k]
-    #         string += 'Point(%d) = {0, %f, %f, lc};\n' % (k + 1, i, j)
-    #     for k in range(len(mesh_contour)):
-    #         if k == len(mesh_contour) - 1:
-    #             string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, 1)
-    #         else:
-    #             string += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
-    #     string += 'Line Loop(%d) = {' % (len(mesh_contour) + 1)
-    #     for k in range(len(mesh_contour) - 1):
-    #         string += '%d, ' % (k + 1)
-    #     string += '%d};\n' % (len(mesh_contour))
-    #     string += 'Plane Surface(%d) = {%d};\n' % (len(mesh_contour) + 2, len(mesh_contour) + 1)
-    #     string += '\nExtrude{%f, 0, 0}\n' % (self.layer_thickness * self.stack.size / 1000)
-    #     string += '{\nSurface{%d}; Layers{%d}; Recombine;\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
-    #     # string += '{\nSurface{%d}; Layers{%d};\n}' % (len(mesh_contour) + 2, self.stack.size - 1)
-    #     string += '\n\nPhysical Volume("Inner Volume") = {1};\n'
-    #     file = open(self.output_dir + name, "w+")
-    #     file.write(string)
-    #     file.close()
-
-    def generate_physical_mesh(self, mesh_contour):
-        physical_geo = 'physical.geo'
-        self.get_physical_geometry(physical_geo, mesh_contour)
-        self.generate_3d_mesh(physical_geo, 'physical_mesh.msh')
-        mesh = meshio.read('output/physical_mesh.msh')
-        mesh.points[:, 1:] = mesh.points[:, 1:] * self.pixel_spacing / 1000
-        # mesh.points[:, 0] = mesh.points[:, -1] * self.layer_thickness * self.stack.size / 1000
-        meshio.write(self.output_dir + 'physical_mesh_corrected.msh', mesh)

@@ -64,8 +64,6 @@ class Discretizer:
         for i in range(len(x_new)):
             self.mesh_contour.append(coord[i].astype(int))
 
-    # TODO: adjust mesh coordinates conversion to meters from pixels;
-    #   check if mesh contour is correct in regard to units
     def mesh(self, name, geo_name=''):
         """
         Launch Gmsh and discretize evaluated geometry
@@ -74,6 +72,7 @@ class Discretizer:
             geo_name = self.geometry_name
         os.system('gmsh %s -3 -o %s' % (self.paths.output + geo_name, self.paths.output + name))
         mesh = meshio.read(self.paths.output + name)
+        # Round coordinates to make mesh Fiji compatible
         mesh.points[:, 1:] = np.around(mesh.points[:, 1:])
         meshio.write(self.paths.output + name, mesh)
 
@@ -117,11 +116,17 @@ class Discretizer:
         return self.prepare_mesh('fiji.msh')
 
     def prepare_mesh(self, name):
+        """
+        Round mesh coordinates to make it Fiji compatible
+        """
         mesh = meshio.read(self.paths.output + name)
         mesh.points = np.around(mesh.points)
         return mesh
 
     def evaluate_physical_mesh(self, name):
+        """
+        Make mesh coordinates represent physical size of the core
+        """
         mesh = meshio.read(self.paths.output + name)
         mesh.points[:, 0] = mesh.points[:, 0] * self.stack_info['Pixel spacing'][0] / 1000
         mesh.points[:, 1] = mesh.points[:, 1] * self.stack_info['Pixel spacing'][0] / 1000
