@@ -254,6 +254,7 @@ class DoubleStackEngine:
         self.discretizer = Discretizer(self.stack.info, self.mask, self.paths, self.save)
         self.discretizer.evaluate_geometry(elem_side_length)
         self.discretizer.mesh(name)
+        self.discretizer.evaluate_physical_mesh(name)
 
     def measure(self, results_name: str, test=False):
         """
@@ -266,7 +267,8 @@ class DoubleStackEngine:
         mesh = self._generate_fiji_macro(results_name, test)
         self._run_fiji()
         measurements = self._rescale_measurements(results_name)
-        return self._resort_measurements(measurements, mesh)
+        measurements_resorted = self._resort_measurements(measurements, mesh)
+        return self._evaluate_3d(measurements_resorted, mesh)
 
     def _generate_fiji_macro(self, results_name, test):
         """
@@ -313,6 +315,9 @@ class DoubleStackEngine:
         return {'Mean gray scale value': mean_gray_scale, 'Area': area}
 
     def _resort_measurements(self, measurements, mesh):
+        """
+        Resort measurements according mesh cells ordering in 3D
+        """
         elems_per_slice = mesh.cells['triangle'].shape[0]
         measurements_resorted = {}
         for key, data in measurements.items():
@@ -323,7 +328,21 @@ class DoubleStackEngine:
             measurements_resorted[key] = resorted
         return measurements_resorted
 
-
+    def _evaluate_3d(self, measurements, mesh):
+        """
+        Evaluate properties for 3D elements
+        """
+        measurements_3d = {}
+        elems_per_slice = mesh.cells['triangle'].shape[0]
+        vols_per_stack = self.stack.info['Stack size'] - 1
+        for key, data in measurements.items():
+            evaluated = np.zeros(data.shape[0] - elems_per_slice)
+            for i in range(elems_per_slice):
+                evaluated[i * vols_per_stack:(i + 1) * vols_per_stack] = \
+                    (data[i * self.stack.info['Stack size']:(i + 1) * self.stack.info['Stack size'] - 1] +
+                     data[i * self.stack.info['Stack size'] + 1:(i + 1) * self.stack.info['Stack size']]) / 2
+            measurements_3d[key] = evaluated
+        return measurements_3d
 
 
 

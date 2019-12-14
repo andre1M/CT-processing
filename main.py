@@ -1,4 +1,6 @@
 from engine import DoubleStackEngine
+
+import numpy as np
 import time
 
 
@@ -42,10 +44,19 @@ dse.kalman_filter(gain=0.75,
 dse.save.stack(dse.filtered_pixel_data, dse.stack, 'filtered_')
 
 # Discretize core
-dse.discretize(elem_side_length=6, name='mesh.msh')     # in mm
+dse.discretize(elem_side_length=3, name='mesh.msh')     # in mm
 
 # Take measurements
 measurements = dse.measure('measurements.csv', test=False)
+
+# Evaluate and save porosity data
+poro = measurements['Mean gray scale value'] / 1000
+np.save('output/poro.npy', poro)
+
+import meshio
+mesh = meshio.read('output/physical_mesh.msh')
+mesh.cell_data['wedge']['Porosity'] = poro
+meshio.write('output/mesh_with_poro.vtk', mesh)
 
 # Stop timer and print time
 elapsed_time = round(time.time() - start_time, 2)

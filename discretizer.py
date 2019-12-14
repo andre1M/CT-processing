@@ -75,11 +75,6 @@ class Discretizer:
         os.system('gmsh %s -3 -o %s' % (self.paths.output + geo_name, self.paths.output + name))
         mesh = meshio.read(self.paths.output + name)
         mesh.points[:, 1:] = np.around(mesh.points[:, 1:])
-
-        # Adjust coordinates to real values
-        mesh.points[:, 0] = mesh.points[:, 0] * self.stack_info['Slice thickness'] / 100
-        mesh.points[:, 1] = mesh.points[:, 1] * self.stack_info['Pixel spacing'][0] / 100
-        mesh.points[:, 2] = mesh.points[:, 2] * self.stack_info['Pixel spacing'][1] / 100
         meshio.write(self.paths.output + name, mesh)
 
     def write_geometry(self):
@@ -125,3 +120,10 @@ class Discretizer:
         mesh = meshio.read(self.paths.output + name)
         mesh.points = np.around(mesh.points)
         return mesh
+
+    def evaluate_physical_mesh(self, name):
+        mesh = meshio.read(self.paths.output + name)
+        mesh.points[:, 0] = mesh.points[:, 0] * self.stack_info['Pixel spacing'][0] / 1000
+        mesh.points[:, 1] = mesh.points[:, 1] * self.stack_info['Pixel spacing'][0] / 1000
+        mesh.points[:, 2] = mesh.points[:, 2] * self.stack_info['Pixel spacing'][0] / 1000
+        meshio.write(self.paths.output + 'physical_' + name, mesh)
