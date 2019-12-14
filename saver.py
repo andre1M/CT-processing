@@ -5,8 +5,6 @@ import pydicom
 import cv2
 
 
-# TODO: finish data saver class. Must be capable of saving pictures of different kinds.
-#  Will be initialized from DoubleStack class.
 class Saver:
     def __init__(self, paths, info):
         self.paths = paths
