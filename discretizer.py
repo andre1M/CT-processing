@@ -25,7 +25,7 @@ class Discretizer:
                                       mode=cv2.RETR_EXTERNAL,
                                       method=cv2.CHAIN_APPROX_NONE)
         for i in range(len(contour[0])):
-            self.contour.append(contour[0][i].ravel())
+            self.contour.append(np.flip(contour[0][i].ravel()))
         self.save.contour(self.contour, 'contour.bmp')
         self.evaluate_mesh_contour(elem_side_length)
         self.save.contour(self.mesh_contour, 'mesh_contour.bmp', True)
@@ -83,7 +83,7 @@ class Discretizer:
         script = '//+\nSetFactory("OpenCASCADE");\nlc = 0;\n'
         for k in range(len(self.mesh_contour)):
             i, j = self.mesh_contour[k]
-            script += 'Point(%d) = {0, %d, %d, lc};\n' % (k + 1, j, i)
+            script += 'Point(%d) = {0, %d, %d, lc};\n' % (k + 1, i, j)
         for k in range(len(self.mesh_contour) - 2):
             script += 'Line(%d) = {%d, %d};\n' % (k + 1, k + 1, k + 2)
         script += 'Line(%d) = {%d, %d};\n' % (len(self.mesh_contour) - 1, len(self.mesh_contour) - 1, 1)

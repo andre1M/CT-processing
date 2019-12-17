@@ -140,10 +140,10 @@ class DoubleStackEngine:
             binary.append(self._convert_to_binary(blurred, image_threshold))
 
         # To avoid anomalies in the mask that may be introduced by close to core ends slices
-        start = int(self.stack.info['Stack size'] * 0.05)
-        stop = int(self.stack.info['Stack size'] * 0.95)
+        start = int(self.stack.info['Stack size'] * 0.0)
+        stop = int(self.stack.info['Stack size'] * 1.0)
 
-        mask = np.zeros((binary[0].shape[0], binary[0].shape[1]))
+        mask = np.zeros(binary[0].shape)
         for i in range(start, stop):
             mask = mask + binary[i]
         mask = self._blur(mask, mask_blur_ksize, mask_blur_sigma)
@@ -281,6 +281,7 @@ class DoubleStackEngine:
         nodes = mesh.points
         string = 'run("Image Sequence...", "open=%s sort");\n' % self.paths.resulting_stack
         string += 'run("Gaussian Blur...", "sigma=3 stack");\n'
+        string += 'run("Set Measurements...", "area mean redirect=None decimal=4");\n'
         for i in range(len(elements)):
             x1 = nodes[int(elements[i, 0]), 2]
             y1 = nodes[int(elements[i, 0]), 1]
@@ -303,7 +304,11 @@ class DoubleStackEngine:
         """
         Launch Fiji to process macro
         """
-        os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.paths.output + 'macro.ijm'))
+        try:
+            os.system('/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx -macro %s' % (self.paths.output + 'macro.ijm'))
+        except:
+            raise ValueError('Fiji executable is not found. Go to _run_fiji method in DoubleStackEngine class to'
+                             'specify appropriate path.')
 
     def _rescale_measurements(self, name):
         """
@@ -343,5 +348,8 @@ class DoubleStackEngine:
                 evaluated[i * vols_per_stack:(i + 1) * vols_per_stack] = \
                     (data[i * self.stack.info['Stack size']:(i + 1) * self.stack.info['Stack size'] - 1] +
                      data[i * self.stack.info['Stack size'] + 1:(i + 1) * self.stack.info['Stack size']]) / 2
-            measurements_3d[key] = evaluated
+            if key == 'Area':
+                measurements_3d['Volume'] = evaluated * self.stack.info['Slice thickness']
+            else:
+                measurements_3d[key] = evaluated
         return measurements_3d

@@ -16,7 +16,7 @@ dse.set('dry', 'brine', 'filtered', 'output')
 dse.read()
 
 # Use to tune image processing parameters and assure correct contour detection
-# dsen.tune(image_blur_ksize=(25, 25),
+# dse.tune(image_blur_ksize=(25, 25),
 #           image_threshold=80,
 #           image_blur_sigma=(0, 0),
 #           mask_blur_ksize=(33, 33),
@@ -27,8 +27,8 @@ dse.read()
 dse.clean(image_blur_ksize=(25, 25),
           image_threshold=100,
           image_blur_sigma=(0, 0),
-          mask_blur_ksize=(33, 33),
-          mask_threshold=65,
+          mask_blur_ksize=(7, 7),
+          mask_threshold=dse.stack.info['Stack size'] * 0.85,
           mask_blur_sigma=0)
 
 # Save mask
@@ -44,7 +44,7 @@ dse.kalman_filter(gain=0.75,
 dse.save.stack(dse.filtered_pixel_data, dse.stack, 'filtered_')
 
 # Discretize core
-dse.discretize(elem_side_length=3, name='mesh.msh')     # in mm
+dse.discretize(elem_side_length=1, name='mesh.msh')     # in mm
 
 # Take measurements
 measurements = dse.measure('measurements.csv', test=False)
@@ -64,4 +64,14 @@ import meshio
 mesh = meshio.read('output/physical_mesh.msh')
 mesh.cell_data['wedge']['Porosity'] = poro
 meshio.write('output/mesh_with_poro.vtk', mesh)
+
+# Evaluate total volume and total pore volume (Specific for a particular example)
+from math import pi
+volume_analytical = 75 ** 2 / 4 * pi * 75
+volume = np.sum(measurements['Volume'])
+print('\nAnalytical volume:', volume_analytical, 'mm^3', '\nEvaluated volume:', volume, 'mm^3')
+
+pv_analytical = volume_analytical * 0.278
+pv = np.sum(measurements['Volume'] * poro)
+print('\nAnalytical PV:', pv_analytical, '[ - ]', '\nEvaluated PV:', pv, '[ - ]')
 # ======================================= Example of post processing data usage =======================================
